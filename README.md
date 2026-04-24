@@ -36,8 +36,14 @@ make map        # build/cyclone.map              (rzxplay.py --map over cyclone.
 make ctl-rzx    # build/cyclone.auto-rzx.ctl     (sna2ctl.py -m map — trace-informed analysis)
 make skool      # build/cyclone.skool            (sna2skool.py using cyclone.ctl)
 make verify     # build/cyclone.reassembled.bin  (skool2bin.py + byte-compare vs snapshot)
+make midgame    # build/cyclone-endgame.z80      (rzxplay.py — post-init snapshot)
+make worldmap   # build/cyclone-world.png + silhouette  (Pillow render)
 make html       # build/html/                    (skool2html.py)
 ```
+
+See `ISLANDS.md` for the decoded 14-island master table and per-island
+tile-map shapes. `make worldmap` reconstructs the full archipelago as a
+PNG by reading the shape data from a post-init snapshot.
 
 `make` with no arguments runs through to `skool`.
 
