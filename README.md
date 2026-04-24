@@ -41,6 +41,18 @@ make html       # build/html/                    (skool2html.py)
 
 `make` with no arguments runs through to `skool`.
 
+## GitHub Pages deployment
+
+`.github/workflows/pages.yml` rebuilds the HTML disassembly on every push
+to `main` (and on manual `workflow_dispatch`) and deploys it to
+GitHub Pages. The workflow runs `pip install skoolkit` then `make html`,
+checks the round-trip via `make verify`, and uploads `build/html/cyclone/`
+as the Pages artifact.
+
+**One-time repo setup**: in **Settings → Pages**, set **Build and
+deployment → Source** to **GitHub Actions**. After the next push to main
+the disassembly will be live at `https://<owner>.github.io/<repo>/`.
+
 ## RZX-driven control file refinement
 
 The repo ships `cyclone.rzx`, a ~1 hour Spectaculator recording of actual
