@@ -560,14 +560,28 @@ c $80D8
 c $8104
 c $8133
 c $8152
-c $81A6
-c $81CB
+c $81A6 Helicopter physics — self-modifying XY position update
+D $81A6 The helicopter's world position is held in the 16-bit variables ($7500) and ($7502). Every frame this routine patches a single byte into each of two slots ($81EF and $81F6) and then runs through 'LD HL,(pos); <patched opcode>; LD (pos),HL' — the patched opcode is one of $00 (NOP, no move), $23 (INC HL, +1) or $2B (DEC HL, -1), selected from the delta table at #R$826F.
+D $81A6 The index into #R$826F is derived from the current difficulty / skill dial at ($7527) and the menu state ($7516). $81B9-$81CE walks ($7527) in the range 0-7 depending on whether BIT 0 of C is set, and $81DC reads A=($7527) (or a copy in $753B) and uses it as the table offset. Each table entry is a pair (X-delta, Y-delta), so stepping by $0001 in the table advances both axes simultaneously.
+D $81A6 The approach means the "engine" has zero inner-loop branching — the delta bytes are baked into the live instruction stream. Changing the helicopter's feel (faster / different trajectories) requires editing the table, not the code.
+c $81CB Skill-dial increment (wraparound at 7)
+D $81CB Increments ($7527), clamping at 7, then copies ($7506)->$753B and falls into #R$81A6 to apply the motion step. Called when BIT 0 of the joystick byte C fires (the "thrust" bit).
 c $8214
 c $8232
 c $824C
 c $8269
-b $826F
-b $827D
+b $826F Helicopter motion delta table (opcode pairs)
+D $826F 14 bytes = 7 pairs of (X-delta-opcode, Y-delta-opcode), each pair self-modified into #R$81A6 between the LD HL,(pos) and LD (pos),HL instructions. Decoded:
+D $826F   0: ( $00 NOP , $2B DEC HL ) = move down
+D $826F   1: ( $23 INC HL, $2B DEC HL ) = move right+down
+D $826F   2: ( $23 INC HL, $00 NOP   ) = move right
+D $826F   3: ( $23 INC HL, $23 INC HL) = move right+up
+D $826F   4: ( $00 NOP , $23 INC HL ) = move up
+D $826F   5: ( $2B DEC HL, $23 INC HL) = move left+up
+D $826F   6: ( $2B DEC HL, $00 NOP   ) = move left
+D $826F The missing 8th pair (left+down) may be encoded by the next 2 bytes at #R$827D ($2B $2B).
+b $827D Likely tail of the motion table (left+down delta pair)
+D $827D The first two bytes $2B $2B complete the 8-direction delta table started at #R$826F (left+down = DEC HL, DEC HL). The remaining four bytes $53 $4F $55 $54 spell 'SOUT' — probably the tail of a compass / heading string that lives nearby (not yet located).
 c $8283
 @ $8284 label=PRE_INPUT_TICK
 c $8284 Pre-input tick (fuel/score decrement?)
@@ -682,15 +696,23 @@ s $8D0A
 @ $8D0E label=CLEAR_PLAY_AREA
 c $8D0E Clear the play area (preserves scoreboard)
 D $8D0E Writes $3F (FLASH|BRIGHT|white-on-white mask) across 22 rows of 23 columns of attributes from $5800 onwards — i.e. the left-hand 23x22 play area, leaving the rightmost 9 attribute columns alone for the HUD/scoreboard. Then walks the matching 23 pixel columns over 22 rows and zero-fills the bitmap using the classic 8x8 cell pattern (INC H 8 times, then INC HL and the RR H / RL H trick to advance one cell right). Called from #R$5B00 each frame.
-c $8D5D Walk object table at $F230 via IX+$0C/$0D pointer
-D $8D5D Reads the 16-bit pointer field at IX+$0C..$0D out of each object record, follows it into HL. Part of the linked-list traversal of active game objects.
+c $8D5D Walk object table at $F230 + emit level-name stream
+D $8D5D Steps through the object table at $F230 in $14-byte records, skipping entries whose first byte is $FF. For each active object it follows the pointer at IX+$10..$11 into the name stream at #R$6A4F and runs the stream-walker at $8DEB:
+D $8D5D   * character bytes $00-$FB are rendered via the 8-byte font at $6908 (see #R$8E15);
+D $8D5D   * $FC bails on the current char;
+D $8D5D   * $FD = emit the shared '?ISLAND' suffix (see #R$8E10);
+D $8D5D   * $FE = advance to the next object record (IX += $14);
+D $8D5D   * $FF = end of stream, RET.
+D $8D5D The name data at $6A50 is therefore not 15 flat strings but a compact control stream shared across every named location the helicopter can fly to.
 c $8D97 Shift-left multiplier (SLA C * B)
 D $8D97 SLA C inside a DJNZ loop — i.e. C <<= B. Inline multiply-by-power-of-2.
-c $8E10
+c $8E10 Emit '?ISLAND' suffix string from the name-stream
+D $8E10 One of the control opcodes in the name-rendering stream ($FD) jumps here. Loads HL=$6AC2 which points at the "?ISLAND" string (and the "?" renders as a space), then falls into the character emitter at $8E15. Used to avoid repeating "ISLAND" in every level name in #R$6A50.
 c $8E3D
 s $8E53
-c $8E5C Draw sprite table to display file
-D $8E5C Takes a table pointed at by IX=$7438, DE=$4000 (display file top), and walks 8-high bitmaps into the screen. One of the main background renderers.
+c $8E5C Paint cockpit/HUD — fixed instrument panel
+D $8E5C Draws the fixed cockpit graphics into the top-left corner of the display file. It walks ten small 8-byte sprite strips at $7438, $7440, $7448, $7460, $7470, $7480, $7488, $7490 (the radar frame, compass ring, altitude ticks, fuel-gauge outline, etc.) into fixed screen addresses ($4000, $4020, $4036, $50A0, ...). Then at $8EBC-onwards it calls #R$859A to stamp the single-character labels (digits, compass letters) from the inline strings at $8F0C+.
+D $8E5C Called from the main init / screen-redraw sequence — not once per frame, since the HUD is static. The dynamic needles/markers are drawn on top by separate routines.
 c $8EE8 Sprite blit inner loop (8 rows)
 D $8EE8 Saves IX/DE, loops 8 times reading IX+$00..+$07 into the display file — the generic 1-cell-high, 8-pixel-tall blit kernel used by #R$8E5C and friends.
 c $8F0C
