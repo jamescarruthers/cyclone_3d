@@ -244,8 +244,9 @@ b $69D2
 b $69D6
 b $69DA
 b $69E8
-t $6A50 Level / island name table
-D $6A50 The 15 level names Cyclone flies between: BANANA, FORTE ROCKS, KOKOLA, LAGOON PEAK, BASE, GILLIGANS, RED SKEG, BONE, GIANTS GATEWAY, CLAW, LUKELAND ISLES, ENTERPRISE, ISLAND. Names are interleaved with $FD/$FE separator bytes; '?' renders as space in the game's font. Used by the map / briefing screen.
+t $6A50 Location name stream (shared world-map islands)
+D $6A50 The 15 named *locations* on Cyclone's single shared archipelago map — NOT per-level maps. The same geography hosts every mission; only the objectives change between plays. Names: BANANA, FORTE ROCKS, KOKOLA, LAGOON PEAK, BASE, GILLIGANS, RED SKEG, BONE, GIANTS GATEWAY, CLAW, LUKELAND ISLES, ENTERPRISE, ISLAND.
+D $6A50 Encoded as a control stream (see #R$8D5D): bytes $00-$FB index an 8-byte font at $6908; $FC terminates a char; $FD emits the shared '?ISLAND' suffix stored at #R$6AC2 (the '?' renders as a space in the font); $FE advances to the next object record; $FF ends the stream. Each location's bytes are pointed at by the IX+$10/$11 field in the 20-byte object records at $F230.
 b $6A56
 t $6A57
 b $6A61
