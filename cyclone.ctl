@@ -583,9 +583,10 @@ s $8320
 c $8321
 c $8390
 s $83BE
-c $83C0 Interrupt-driven beeper (music / engine sound)
-D $83C0 Called from the interrupt handler. Guards against re-entry via ($752D) and the demo-mode flag at ($7505). If the game is in normal play it reads a 4-bit mode from ($755D), sets up a pair of DJNZ delay counters (D and E), then loops 6-10 times driving OUT ($FE),$10 / OUT ($FE),$00 with the two delays — a standard 48K beeper square-wave generator. Exits via the common #R$842D tail which POPs all registers and EIs.
-D $83C0 The single NOP at $83C1 and the DI at $83C2 strongly hint that this block can be called from inside an interrupt (DI already in force) or directly — the NOP pads the branch target.
+@ $83C2 label=ISR_BEEPER
+c $83C0 Interrupt service routine (beeper tick) — real entry is $83C2
+D $83C0 The RZX execution map proves that the actual entry point is #R$83C2, not $83C0. The game installs an IM 2 interrupt vector dynamically (see #R$FFDF notes): every 50Hz interrupt jumps to $FFF4, which the init code at $8C8C-$8C95 pokes full of 'JP $83C2'. The two bytes at $83C0-$83C1 ($44 $00, i.e. 'LD B,H; NOP') are padding.
+D $83C0 The handler guards against re-entry via ($752D) and the demo-mode flag at ($7505). If the game is in normal play it reads a 4-bit sound mode from ($755D), sets up a pair of DJNZ delay counters (D and E), then loops 6-10 times driving OUT ($FE),$10 / OUT ($FE),$00 with the two delays — a standard 48K beeper square-wave generator. Exits via the common #R$842D tail which POPs all registers and EIs.
 c $8404 Secondary entry to the beeper with different mode
 s $8435
 c $843A
@@ -2232,6 +2233,7 @@ b $FFC7
 t $FFC9
 b $FFCF
 t $FFD9
-b $FFDF
+b $FFDF Graphics bytes + IM 2 interrupt vector trampoline (runtime-patched)
+D $FFDF Most of this block is end-of-map graphics data. The three bytes at $FFF4-$FFF6 are special: in this pre-init snapshot they still contain uninitialised junk ($10 $10 $10), but the setup code at $8C8C-$8C95 POKEs them with $C3 $C2 $83 ('JP #R$ISR_BEEPER') just before executing 'LD A,$3A; LD I,A; IM 2'. The Spectrum's IM 2 interrupt vector ends up at I*256+$FF = $3AFF in the 48K ROM, whose ROM bytes happen to be $F4 $FF — so each interrupt jumps to $FFF4, which then JPs to the real handler. Classic Spectrum IM 2 trick.
 t $FFF9
 b $FFFF

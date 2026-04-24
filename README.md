@@ -32,12 +32,52 @@ pip install /tmp/skoolkit
 ```sh
 make snapshot   # build/cyclone.z80              (tap2sna.py simulates the SpeedLock loader)
 make ctl-auto   # build/cyclone.auto.ctl         (sna2ctl.py — fresh static analysis)
+make map        # build/cyclone.map              (rzxplay.py --map over cyclone.rzx)
+make ctl-rzx    # build/cyclone.auto-rzx.ctl     (sna2ctl.py -m map — trace-informed analysis)
 make skool      # build/cyclone.skool            (sna2skool.py using cyclone.ctl)
 make verify     # build/cyclone.reassembled.bin  (skool2bin.py + byte-compare vs snapshot)
 make html       # build/html/                    (skool2html.py)
 ```
 
 `make` with no arguments runs through to `skool`.
+
+## RZX-driven control file refinement
+
+The repo ships `cyclone.rzx`, a ~1 hour Spectaculator recording of actual
+gameplay. `rzxplay.py --map` replays it headless and logs every executed
+instruction address to `build/cyclone.map` (4,207 unique addresses for this
+recording). Feeding that map into `sna2ctl.py -m` produces a second auto
+control file (`build/cyclone.auto-rzx.ctl`) informed by what the game
+*actually did*, not just what static analysis can prove reachable.
+
+Comparing the two with `python3 tools/compare_ctl.py`:
+
+```
+Code blocks both agree on         : 100   (high-confidence heavy hitters)
+Static says code, map did not see : 247   (rarely-executed paths / dead code)
+Map says code, static missed      :  13   (indirect-jump targets)
+```
+
+The three categories drive different decisions:
+
+1. **Consensus code (100)** — both analyses say "this is code". Start
+   annotating these first; they include `$5B00` MAIN_LOOP, `$6F00`, the
+   sprite-render chain at `$77xx-$79xx`, etc.
+2. **Static-only (247)** — reachable by static analysis, untouched by this
+   particular playthrough. Most are real code on rarely-hit branches
+   (level-specific handlers, death animations, attract mode paths); some
+   may be genuine dead code. Verify by playing longer / recording more
+   RZXs.
+3. **Map-only (13)** — bytes the RZX proves are code but static analysis
+   missed. These are reached via indirect jumps (`JP (HL)`, runtime-built
+   vectors) and are the most important discoveries. For Cyclone they
+   include `$83C2` (the real IM 2 interrupt entry) and `$FFF4` (the IM 2
+   trampoline the game builds at runtime — see the `$FFDF` block
+   description in `cyclone.ctl`).
+
+The hand-curated `cyclone.ctl` uses the fine-grained static analysis as its
+base (so rarely-executed routines still get disassembled as code) and
+layers RZX discoveries on top as notes / labels at the map-only addresses.
 
 ## Checking the disassembly is correct
 
