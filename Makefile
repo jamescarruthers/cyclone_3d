@@ -61,7 +61,7 @@ midgame: $(BUILD)/cyclone-endgame.z80
 $(BUILD)/cyclone-endgame.z80: $(RZX) | $(BUILD)
 	rzxplay.py --no-screen --fps 0 --quiet $(RZX) $(BUILD)/cyclone-endgame.z80
 
-worldmap: images/cyclone-map.png images/cyclone-gameplay.png
+worldmap: images/cyclone-map.png images/cyclone-gameplay.png images/cyclone-full-map.png
 
 # Capture two authentic in-game screenshots by replaying the RZX to specific
 # frames and running sna2img.py on each resulting snapshot:
@@ -76,6 +76,27 @@ images/cyclone-gameplay.png: $(RZX) | $(BUILD)
 	mkdir -p images
 	rzxplay.py --no-screen --fps 0 --quiet --stop 3000 $(RZX) $(BUILD)/frame-play.z80
 	sna2img.py -s 3 $(BUILD)/frame-play.z80 images/cyclone-gameplay.png
+
+# Reconstruct the full archipelago by scanning the RZX at 1500-frame
+# intervals, picking the frame where the helicopter is best-centred over
+# each of the 14 islands (using positions decoded from the master table at
+# $F230), cropping the playfield, and compositing onto a 2048x2048 canvas.
+SCAN_FRAMES := $(shell seq 100 1500 180000)
+SCAN_DIR := $(BUILD)/scan
+
+scan: $(SCAN_DIR)/.done
+
+$(SCAN_DIR)/.done: $(RZX) | $(BUILD)
+	@mkdir -p $(SCAN_DIR)
+	@for f in $(SCAN_FRAMES); do \
+	  test -s $(SCAN_DIR)/f$$f.z80 || \
+	    rzxplay.py --no-screen --fps 0 --quiet --stop $$f $(RZX) $(SCAN_DIR)/f$$f.z80; \
+	done
+	@touch $(SCAN_DIR)/.done
+
+images/cyclone-full-map.png: $(SCAN_DIR)/.done tools/build_full_map.py
+	mkdir -p images
+	python3 tools/build_full_map.py $(SCAN_DIR) images/cyclone-full-map.png
 
 ctl-rzx: $(AUTO_RZX)
 
