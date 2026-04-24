@@ -38,7 +38,8 @@ t $4671
 b $4674
 t $46D0
 b $46D3
-c $4888
+b $4888 Graphics bytes (mis-classified as code by sna2ctl.py)
+D $4888 These 18 bytes ($4888-$4899) form the tail of the graphics data block that starts well before and continues as $489A. The static analyser mis-identified them as a routine because CALL M,$FF0F (FC 0F FF) happens to be valid Z80 encoding — flipping to 'b' disassembles them as DEFB without changing any bytes.
 b $489A
 t $54A9
 b $54AC
@@ -63,19 +64,25 @@ t $5916
 b $5AA3
 t $5ABD
 b $5AC0
+@ $5B00 label=MAIN_LOOP
 c $5B00 Main game loop
-D $5B00 Top-level per-frame routine entered after the SpeedLock loader finishes decryption. It chains through setup helpers, draws the current frame, polls input and dispatches to the state handlers.
-D $5B00 Follow the CALL targets below ($84D6, $8D0E, $84F4, $87BC, ...) to discover initialisation, rendering and input subsystems.
-c $5B86
-c $5BEC
-t $5BF2
+D $5B00 Top-level per-frame routine entered after the SpeedLock loader finishes decryption. Calls #R$84D6 (clear screen), #R$8D0E (clear play area), #R$84F4 (reset play area tables) and #R$87BC to set up a fresh frame, then runs the per-frame pipeline: #R$76D2 input, #R$87F0/#R$91B4 object updates, #R$8B91 scroll, #R$8CA0 sprite tables, rendering, then #R$8B74 RNG tick, #R$85D4 end-of-frame housekeeping.
+D $5B00 The two bytes at $5B5A-$5B5C sample ($7505), a game-mode flag: 01 means "in attract mode / demo" and jumps to #R$9246. Further branches check ($7526) joystick/input-method flags to decide which scanner to call (#R$762C vs #R$80AA).
+D $5B00 Near the end, IN A,($FE) with A=$FD at $5BDD reads keyboard row A-G; if both A and G are held, the frame ends by jumping to the death/reset handler #R$E280.
+c $5B86 Frame dispatch (cursor/joystick variant)
+D $5B86 Called from #R$MAIN_LOOP when ($7526) bit 1 is clear (keyboard-only input).
+c $5BEC Display "NO FUEL" message
+D $5BEC Tail-call into #R$92D0 with HL pointing at the fixed message string at #R$5BF2. Triggered when the fuel counter reaches zero.
+t $5BF2 " NO FUEL " message text
 b $5BFB
-c $5CB2 BASIC loader stub / game variables
-D $5CB2 The tape's BASIC autostart program originally lived here. After loading, part of this region is reused to hold the game's state variables (scores, lives, current level, object tables).
+b $5CB2 BASIC system-variables tail + a small helper fragment
+D $5CB2 The bytes at $5CB2-$5CBA are end-of-BASIC-program markers (F0 FF FF FF 00 F0 01 21 F0) sitting inside the Spectrum's system-variables / BASIC VARS window. Marking them as 'c' as sna2ctl.py did produced the nonsense 'RET P / RST $38 / RST $38 / ...' sequence; flipping to 'b' renders them as DEFB without changing a byte.
+D $5CB2 The ten bytes from $5CBB onwards (5F CD E8 19 22 BA 5C C9) encode 'LD E,A / CALL $19E8 / LD ($5CBA),HL / RET' — a short helper the BASIC loader used to call the ROM NEXT-LOOP routine at $19E8. It's preserved in the snapshot but unreachable from the loaded game, which is why keeping it as data is safe.
 b $5CC3
 t $5D08
 b $5D0D
-c $5D89
+c $5D89 Explosion / noise sound effect (RNG-driven beeper)
+D $5D89 Calls #R$8B74 to get a fresh random word, bails out via #R$842D if L is too low (under $46), then runs three rounds of a two-phase beeper wobble. Each round splits the random word into two 4-bit counters: one drives a high OUT ($FE),$10 pulse burst and the other a low OUT ($FE),$00 burst, producing the noisy "explosion" tones. Classic 48K Spectrum beeper with DJNZ timing.
 s $5DBC
 c $5DC5
 c $5E0A
@@ -540,12 +547,17 @@ c $7F21
 b $7F98
 t $7F9C
 b $7FAC
-c $7FD6
-c $8023
+@ $7FD6 label=READ_INPUT
+c $7FD6 Keyboard / joystick input dispatcher
+D $7FD6 Reads the control-method byte at ($7504): 00 = Sinclair-style joystick (falls through to #R$7FE8); 03 = cursor keys (jumps to #R$8079); anything else = custom keys (#R$8023). Each branch packs the movement/fire state into a single byte at ($7522) where bits 0-4 mean up/down/left/right/fire.
+c $8023 Custom-keys input scanner
+D $8023 Reads keyboard half-rows $EF (P-Y) and $F7 (1-5) and packs the resulting directions/fire flag into ($7522). Called from #R$READ_INPUT when the player has chosen a user-defined key layout.
 c $8052
-c $8079
+c $8079 Cursor-keys input scanner
+D $8079 Reads half-rows $F7 (1-5) and $EF (P-Y) to pick up the Sinclair cursor keys (5=left, 6=down, 7=up, 8=right, 0=fire) and packs the resulting state in ($7522).
 s $80A6
-c $80AA
+c $80AA Pause / attract-mode toggle (SPACE key)
+D $80AA Polls half-row $7F (SPACE/B/N/M/SymShift) for SPACE, debounces it against a flag at ($7526) bit 0, and optionally beeps the ROM tone at #R$03B5 to acknowledge the keypress.
 c $80D2
 c $80D8
 c $8104
@@ -571,16 +583,22 @@ s $8320
 c $8321
 c $8390
 s $83BE
-c $83C0
-c $8404
+c $83C0 Interrupt-driven beeper (music / engine sound)
+D $83C0 Called from the interrupt handler. Guards against re-entry via ($752D) and the demo-mode flag at ($7505). If the game is in normal play it reads a 4-bit mode from ($755D), sets up a pair of DJNZ delay counters (D and E), then loops 6-10 times driving OUT ($FE),$10 / OUT ($FE),$00 with the two delays — a standard 48K beeper square-wave generator. Exits via the common #R$842D tail which POPs all registers and EIs.
+D $83C0 The single NOP at $83C1 and the DI at $83C2 strongly hint that this block can be called from inside an interrupt (DI already in force) or directly — the NOP pads the branch target.
+c $8404 Secondary entry to the beeper with different mode
 s $8435
 c $843A
 c $844E
 c $8470
 c $84AE
-c $84D6
+@ $84D6 label=CLEAR_SCREEN
+c $84D6 Clear screen (black paper, white ink)
+D $84D6 Zero-fills the 6144-byte display file ($4000-$57FF), then paints $07 across the full 768-byte attribute file ($5800-$5AFF) giving white ink (bits 0-2) on black paper. Leaves HL at $5B00 on exit.
+R $84D6 O:HL $5B00 (one past the attribute file)
 s $84F2
-c $84F4
+c $84F4 Initialise attributes and icons around the play area
+D $84F4 Copies 21 runs of 8 attribute bytes from the table at $7200 into alternating positions across attribute rows starting at $5818, then copies a 64-byte block from $7148 to $5AC0 (the last two attribute rows — the scoreboard). Finally iterates an icon/sprite-index table at $7300, unpacking up to 15 x 8 entries into character cells near $4018. Runs once per new level to paint the static HUD graphics.
 t $85B9
 b $85CB
 t $85CC
@@ -617,9 +635,15 @@ c $8B49
 c $8B4E
 c $8B5D
 b $8B63
-c $8B67
+@ $8B67 label=SET_IM1
+c $8B67 Enable interrupt mode 1 (and EI)
+D $8B67 Sets I to the value already in A then executes IM 1 / EI / RET. Used when the game needs the standard 48K ROM interrupt (e.g. while calling into the ROM BEEPER).
 s $8B6D
-c $8B74
+@ $8B74 label=RANDOM
+c $8B74 Pseudo-random number generator (system-variable seed)
+D $8B74 Reads the 16-bit seed from Spectrum system variable SEED at ($5C76), mangles it with a sequence of SBC HL,DE / SBC A,$00 operations that implement a Lehmer-style multiply-and-modulo, then writes the new value back to ($5C76). Returns the new random word in HL.
+D $8B74 Called from many places — the sound routine #R$5D89 uses it for noise pitch, object spawners use it for positions, etc.
+R $8B74 O:HL new 16-bit random number
 c $8B91
 c $8BA2
 c $8BC6
@@ -628,10 +652,13 @@ c $8C19
 c $8C35
 b $8C66
 c $8C83
-c $8CA0
+c $8CA0 Load sprite/character bank by index
+D $8CA0 Reads indices from ($7504) and ($7507), walks a 72-byte-per-entry table starting at $E8E8 to find the selected bank, LDIRs the 72 bytes to $6950, then conditionally LDIRs further graphic strips to $7000 / $6700 based on ($7515)/($7516). Called once per level transition to swap in the correct ship / enemy frames.
 c $8CEE
 s $8D0A
-c $8D0E
+@ $8D0E label=CLEAR_PLAY_AREA
+c $8D0E Clear the play area (preserves scoreboard)
+D $8D0E Writes $3F (FLASH|BRIGHT|white-on-white mask) across 22 rows of 23 columns of attributes from $5800 onwards — i.e. the left-hand 23x22 play area, leaving the rightmost 9 attribute columns alone for the HUD/scoreboard. Then walks the matching 23 pixel columns over 22 rows and zero-fills the bitmap using the classic 8x8 cell pattern (INC H 8 times, then INC HL and the RR H / RL H trick to advance one cell right). Called from #R$MAIN_LOOP each frame.
 c $8D5D
 c $8D97
 c $8E10
@@ -1884,7 +1911,9 @@ t $DF6C
 b $DF72
 t $E065
 b $E06B
-c $E280
+@ $E280 label=DEATH
+c $E280 Death / game-over / reset sequence
+D $E280 Entered when the player dies (low fuel with #R$5BEC, A+G key combo at $5BE9 in the main loop, or the IM2 handler at $8C9D). Sets the "dying" flag ($752D) to 1, plays a falling-tone beeper via ROM #R$03B5 (HL=$0666, DE=$0055), waits in a loop for #R$E3F8 to return NC, then calls #R$CLEAR_SCREEN and #R$E2E8 to repaint. Finally reloads the saved control state from ($7FD5) and drops through to the menu at $E2BD.
 c $E29E
 c $E2E8
 b $E325
