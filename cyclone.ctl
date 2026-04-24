@@ -2149,30 +2149,41 @@ b $F0C5
 b $F0C8
 b $F217
 b $F21A
-b $F240
-b $F243
-b $F254
-b $F257
-b $F282
-b $F285
-b $F286
-b $F28A
-b $F28B
-b $F28E
-b $F29A
-b $F29E
-b $F2AE
-b $F2B3
-b $F2CC
-b $F2CF
-b $F2E0
-b $F2E3
-b $F300
-b $F303
-b $F308
-b $F30B
-b $F322
-c $F326
+b $F230 Island master table — 14 locations on the shared world map
+D $F230 The 20-byte-per-record table that defines every named island in Cyclone. Decoded structure (offsets from the record start, matched to the reads in #R$76D2 / #R$7777 / #R$8D5D / #R$8DEB):
+D $F230   +$00  type byte     (values $00/$01/$02 — graphic/category)
+D $F230   +$01  sub-type      (values $00/$01/$02)
+D $F230   +$02  x_min         world X lower bound
+D $F230   +$03  x_max         world X upper bound
+D $F230   +$04  y_min         world Y lower bound (compared with ($7502) at $770A)
+D $F230   +$05  y_max         world Y upper bound
+D $F230   +$06  z_min         altitude / Z lower bound
+D $F230   +$07  z_max         altitude / Z upper bound
+D $F230   +$08..+$09          secondary bounds (altitude mid / size?)
+D $F230   +$0A..+$0B          runtime shape-work-buffer pointer (populated by the 3D projector, zero in this pre-init snapshot)
+D $F230   +$0C..+$0D          display-file address at which to paint the projected shape
+D $F230   +$0E..+$0F          additional work field
+D $F230   +$10..+$11          unused by the name walker (self-modified slot, see #R$8DEB)
+D $F230   +$12                attribute-file HIGH byte for the paint target
+D $F230   +$13                $00 — record terminator byte
+D $F230 The 14 records map 1:1 to the 14 named locations in the name stream at #R$6A50 (BANANA ISLAND, FORTE ROCKS, KOKOLA ISLAND, LAGOON ISLAND, PEAK ISLAND, BASE ISLAND, GILLIGANS ISLAND, RED ISLAND, SKEG ISLAND, BONE ISLAND, GIANTS GATEWAY, CLAW ISLAND, LUKELAND ISLES, ENTERPRISE ISLAND). Each name is either $FD-terminated (renderer appends ' ISLAND') or $FE-terminated (rendered as-is).
+D $F230 An $FF byte at $F348 marks the end of the table — #R$8D5D bails when IX+$00 = $FF.
+D $F230 Decoded island world coordinates (centres/bounding boxes):
+D $F230   $F230  BANANA ISLAND      x= 92-168  y=128-184  z=114-146
+D $F230   $F244  FORTE ROCKS        x=136-211  y=  0- 57  z=158-189
+D $F230   $F258  KOKOLA ISLAND      x= 87-161  y=148-204  z=109-139
+D $F230   $F26C  LAGOON ISLAND      x=116-203  y=184-240  z=138-181
+D $F230   $F280  PEAK ISLAND        x= 40-101  y= 88-144  z= 62- 79
+D $F230   $F294  BASE ISLAND        x= 28-130  y= 80-136  z= 50-108
+D $F230   $F2A8  GILLIGANS ISLAND   x= 28- 94  y= 88-145  z= 50- 72
+D $F230   $F2BC  RED ISLAND         x=120-182  y= 64-120  z=142-160
+D $F230   $F2D0  SKEG ISLAND        x=112-173  y=  0- 56  z=134-151
+D $F230   $F2E4  BONE ISLAND        x=172-255  y=124-180  z=194-233
+D $F230   $F2F8  GIANTS GATEWAY     x=152-203  y= 12- 80  z=174-181
+D $F230   $F30C  CLAW ISLAND        x=196-253  y=192-254  z=218-231
+D $F230   $F320  LUKELAND ISLES     x= 48-109  y= 48-108  z= 70- 87
+D $F230   $F334  ENTERPRISE ISLAND  x= 68-139  y=176-251  z= 90-117
+D $F230 The IX+$0A/$0B "shape" pointer values point into the $9300-$CFFF region which is zero in this pre-init snapshot — the island meshes are computed at runtime by the 3D projector rather than blitted from static sprite data.
 @ $F34A label=FLASH_HUD
 c $F34A Border/HUD flash (late-frame)
 c $F35A
