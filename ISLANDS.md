@@ -81,11 +81,377 @@ The master table lives at `$F230` in the post-load snapshot. Each record is
 (Letters are each island's first letter. Where two islands share an initial,
 the legend in `cyclone.ctl` disambiguates.)
 
-## What's still unknown
+## Island shape data (post-init)
 
-The `+$0A/+$0B` shape-work-buffer pointers point into `$9300-$CFFF`, which
-is entirely zero in the pre-init snapshot. That means the **island meshes
-are computed at runtime by a 3D projector** — there's no static sprite per
-island. The geometry source (either polygon coordinates, heightmap, or some
-compact encoding) lives somewhere in the un-annotated data; finding it will
-need tracing the code that populates `$9300+`.
+The `+$0A/+$0B` base pointers target `$9300-$CFFF`, which is **empty in the
+pre-load snapshot** but **fully populated** once the SpeedLock loader has
+finished. `make midgame` captures a post-init snapshot
+(`build/cyclone-endgame.z80`) by replaying the RZX to its end; the shapes
+below are extracted from that snapshot.
+
+Each island occupies a **256-byte, 16×16 tile-index map**. Non-zero bytes
+are indices into the 8×8-pixel glyph font at `$FA00` (the same font used
+by the tile renderer at `#R$762C`). Zero bytes render as "open sea".
+
+Several islands share a page by packing their non-zero tiles at disjoint
+offsets:
+
+- `$9300` holds BANANA, GILLIGANS (`$9354`) and GIANTS GATEWAY (`$9337`).
+- `$9D00` holds FORTE ROCKS and RED ISLAND (`$9FD8`).
+- `$A900` holds KOKOLA and SKEG (`$ADD8`).
+- `$B800` holds BONE (`$B843`).
+- `$C600` holds LUKELAND (`$C628`) and ENTERPRISE (`$C64F`).
+
+Within each island's 256-byte block, the shape is typically stored as
+**two views** — rows 0-7 and rows 8-15 — that differ subtly, likely for
+the helicopter's approach direction.
+## Island tile-map shapes
+
+Each island's visual is stored as a 16×16 array of tile indices at its
+shape base address (`+$0A/+$0B` in the master record). Non-zero bytes
+are tile indices into the 8×8-pixel glyph font at `$FA00` (the same
+font used by #R$762C). Zero bytes are "open sea".
+
+Many islands pack two views (e.g. normal + inverted) into rows 0-7 and
+rows 8-15 of the same 256-byte block — probably used for the scanline
+flip as the helicopter passes over.
+
+Legend: `.` sea  `:` fill  `=` horizontal edge  `#` corner/edge
+`o` numeric edge tile  `^` island cap  `*` detail  `+` other.
+
+### BANANA ISLAND
+- master record: `$F230`
+- shape base: `$9300` (256-byte tile map)
+- world bounds: x 92-168, y 128-184
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . * ^ ^ ^ . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . + o o o o . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . + o o . . . . . . . .
+   . . o o o o o . . . . . . . . .
+```
+
+### FORTE ROCKS
+- master record: `$F244`
+- shape base: `$9D00` (256-byte tile map)
+- world bounds: x 136-211, y 0-57
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . + + + = * ^ ^
+   . . . . . + = = + : : : : : o .
+   . . . . . . . . . . + o o : : :
+   : : : : : o o + . . . . . . . .
+   o : : + : : : : : : : : o o o .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . + + + = * ^ ^
+   . . . . . + # + : : : : : o . .
+   . . . . . . . . . . . . . o : :
+   : : : : o . . . . . . . . . . .
+   . o o o o o o o o : : : : : o .
+```
+
+### KOKOLA ISLAND
+- master record: `$F258`
+- shape base: `$A900` (256-byte tile map)
+- world bounds: x 87-161, y 148-204
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . + # # # = = = #
+   : : : : : : : : : + + + . . . .
+   . . . . . . . . . . o + = = = #
+   # = + = = = = = = = = # : : : o
+   o o o o : : : : : o . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . + = = = = = = = =
+   # # # + : : : + + + + + o . . .
+   . . . . . . . . . . . + = = # :
+   : + # # # # # # # # # + : : o .
+   . . . . o o o o o o . . . . . .
+```
+
+### LAGOON ISLAND
+- master record: `$F26C`
+- shape base: `$B600` (256-byte tile map)
+- world bounds: x 116-203, y 184-240
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . o : : : : : : + # # = = # +
+   : : : : : : o . . . . . . . . .
+   . . . . . . . . o : : : : : : o
+   o o o o o * ^ ^ ^ ^ ^ ^ ^ . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . + o o o : : : + # # # + : :
+   : : : : : : o . . . . . . . . .
+   . . . . . . . . . o : : : : o .
+   . . . . . * ^ ^ ^ ^ ^ ^ ^ . . .
+```
+
+### PEAK ISLAND
+- master record: `$F280`
+- shape base: `$C300` (256-byte tile map)
+- world bounds: x 40-101, y 88-144
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . + = = * ^ ^ ^ ^ ^ ^ =
+   = = = = = # o o o . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . + = = = = # : : : : : o .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . + = = * * * * * * =
+   = = = = = # . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . + # # # # + : : + : : o .
+```
+
+### BASE ISLAND
+- master record: `$F294`
+- shape base: `$CF80` (256-byte tile map)
+- world bounds: x 28-130, y 80-136
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . + o : : : : : o + + + + + +
+   + + . . . . . . . . . . . . o :
+   * * + : : + # # # # # + : : o .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . o
+   o o o o . . . . . . . . . . . .
+   . . . . o : : : + + + + + + + +
+   + + . . . . . . . . . . . . o :
+   : : : : : + # # = = = # : : o .
+```
+
+### GILLIGANS ISLAND
+- master record: `$F2A8`
+- shape base: `$9354` (256-byte tile map)
+- world bounds: x 28-94, y 88-145
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . * ^ ^ ^ . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . + o o o o . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . + o o . . . . . . . . . . o o
+   o o o . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . * ^ + ^ . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . o
+   o o : : : : o . . . . . . . . .
+```
+
+### RED ISLAND
+- master record: `$F2BC`
+- shape base: `$9FD8` (256-byte tile map)
+- world bounds: x 120-182, y 64-120
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   o : + = = = = = = = = = = = + o
+   o . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   o : + # # # # # # # = = = + # :
+   o . . . . . . . . . . . . . . .
+```
+
+### SKEG ISLAND
+- master record: `$F2D0`
+- shape base: `$ADD8` (256-byte tile map)
+- world bounds: x 112-173, y 0-56
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . o o o o o o o o : : : :
+   * * * * * ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^
+   ^ ^ ^ ^ ^ ^ ^ ^ + + ^ . . . . +
+   = = = = * ^ = # : : : : o . . .
+   + + + + . . . . . . . . . . . .
+   . . . . . + + + + + + + + + + +
+   + + + + + + + + . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . o : : : : : : : : : + : :
+   : : : : + * ^ ^ ^ ^ ^ ^ ^ ^ ^ ^
+   + ^ ^ ^ + + ^ ^ ^ ^ ^ ^ . . . .
+   + = = = * * = # : : : : o . . +
+   + + + + . . . . . . . . . . . .
+```
+
+### BONE ISLAND
+- master record: `$F2E4`
+- shape base: `$B843` (256-byte tile map)
+- world bounds: x 172-255, y 124-180
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . *
+   ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ . . . . .
+   . . . . . . . . + o o : : : : +
+   = = = = = = = = # # # # # # + .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . *
+   ^ ^ ^ ^ ^ ^ ^ ^ * * * . . . . .
+   . . . . . . . . o : : : : : : +
+   = = = # # = = = = = = = = = # +
+   . . . . . . . . . . . . . . . .
+```
+
+### GIANTS GATEWAY
+- master record: `$F2F8`
+- shape base: `$9337` (256-byte tile map)
+- world bounds: x 152-203, y 12-80
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . * ^
+   ^ ^ . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . +
+   o o o o . . . . . . . . . . . .
+   . . . . . . . . . . . . . . + o
+   o . . . . . . . . . . o o o o o
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . * ^
+   + ^ . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+```
+
+### CLAW ISLAND
+- master record: `$F30C`
+- shape base: `$A735` (256-byte tile map)
+- world bounds: x 196-253, y 192-254
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . o : + = = + = = = # : :
+   : : : : : : : : : : : : : : * *
+   + : : : : : o . . . . . . . . .
+   . . . . . . . . . . . + o + # #
+   # # # # # . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . o o o o
+   o o o o o o . . . . . . . . . .
+   . . . . o : + = + = = = = = # #
+   # # # # # # # # # # # # # # + :
+   : : : : + : o . . . . . . . . .
+   . . . . . . . . . . . o : : : :
+   : : : o . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+```
+
+### LUKELAND ISLES
+- master record: `$F320`
+- shape base: `$C628` (256-byte tile map)
+- world bounds: x 48-109, y 48-108
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . + + + + +
+   + + : : : : o + + + + + + + + +
+   + + + + + + + + o + + + + + + .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . o o o o . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . + + + + +
+   + : : : : : o + + + + + + + + +
+   + + + + + + + : : : + + + . . .
+```
+
+### ENTERPRISE ISLAND
+- master record: `$F334`
+- shape base: `$C64F` (256-byte tile map)
+- world bounds: x 68-139, y 176-251
+
+```
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . + + + + + + + : : : : o
+   + + + + + + + + + + + + + + + +
+   + o + + + + + + . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . o o o o
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . + + + + + + : : : : : o
+   + + + + + + + + + + + + + + + +
+   : : : + + + . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+   . . . . . . . . . . . . . . . .
+```
+

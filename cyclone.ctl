@@ -2183,7 +2183,7 @@ D $F230   $F2F8  GIANTS GATEWAY     x=152-203  y= 12- 80  z=174-181
 D $F230   $F30C  CLAW ISLAND        x=196-253  y=192-254  z=218-231
 D $F230   $F320  LUKELAND ISLES     x= 48-109  y= 48-108  z= 70- 87
 D $F230   $F334  ENTERPRISE ISLAND  x= 68-139  y=176-251  z= 90-117
-D $F230 The IX+$0A/$0B "shape" pointer values point into the $9300-$CFFF region which is zero in this pre-init snapshot — the island meshes are computed at runtime by the 3D projector rather than blitted from static sprite data.
+D $F230 IX+$0A/$0B is a base pointer into the island shape data at $9300-$CFFF. That region is empty in this pre-init snapshot but is populated once the SpeedLock loader has finished — see the mid-gameplay snapshot from `make midgame`. Each island's shape is a 256-byte, 16x16 tile-index map read by #R$7777 as HL = base + ((#R$7500) - IX+$06), with each byte indexing the 8x8-pixel glyph font at $FA00 (same font used by #R$762C). Multiple sparse islands share a 256-byte page (e.g. BANANA+GILLIGANS+GIANTS all live in $9300-$93FF at offsets 0, $54, $37). See ISLANDS.md for the rendered shapes.
 @ $F34A label=FLASH_HUD
 c $F34A Border/HUD flash (late-frame)
 c $F35A
