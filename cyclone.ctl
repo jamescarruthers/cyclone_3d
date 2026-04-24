@@ -38,6 +38,7 @@ c $5B00 Main game loop
 D $5B00 Top-level per-frame routine entered after the SpeedLock loader finishes decryption. Calls #R$84D6 (clear screen), #R$8D0E (clear play area), #R$84F4 (reset play area tables) and #R$87BC to set up a fresh frame, then runs the per-frame pipeline: #R$76D2 input, #R$87F0/#R$91B4 object updates, #R$8B91 scroll, #R$8CA0 sprite tables, rendering, then #R$8B74 RNG tick, #R$85D4 end-of-frame housekeeping.
 D $5B00 The two bytes at $5B5A-$5B5C sample ($7505), a game-mode flag: 01 means "in attract mode / demo" and jumps to #R$9246. Further branches check ($7526) joystick/input-method flags to decide which scanner to call (#R$762C vs #R$80AA).
 D $5B00 Near the end, IN A,($FE) with A=$FD at $5BDD reads keyboard row A-G; if both A and G are held, the frame ends by jumping to the death/reset handler #R$E280.
+N $5B71 Navigation-map redraw (one-shot, latched on bit 4 of ($7526)). When the player toggles the map view, the sequence at $5B73-$5B81 — RES 4 / LD ($7526) / CALL #R$8D0E (clear) / CALL #R$8D5D (paint islands + names) / CALL #R$8E5C (HUD) / CALL $8F6A (helicopter cursor) — repaints the nav-map screen seen in images/cyclone-map.png.
 c $5B86 Frame dispatch (cursor/joystick variant)
 D $5B86 Called from #R$5B00 when ($7526) bit 1 is clear (keyboard-only input).
 c $5BEC Display "NO FUEL" message
@@ -697,8 +698,11 @@ s $8D0A
 @ $8D0E label=CLEAR_PLAY_AREA
 c $8D0E Clear the play area (preserves scoreboard)
 D $8D0E Writes $3F (FLASH|BRIGHT|white-on-white mask) across 22 rows of 23 columns of attributes from $5800 onwards — i.e. the left-hand 23x22 play area, leaving the rightmost 9 attribute columns alone for the HUD/scoreboard. Then walks the matching 23 pixel columns over 22 rows and zero-fills the bitmap using the classic 8x8 cell pattern (INC H 8 times, then INC HL and the RR H / RL H trick to advance one cell right). Called from #R$5B00 each frame.
-c $8D5D Walk object table at $F230 + emit level-name stream
-D $8D5D Steps through the object table at $F230 in $14-byte records, skipping entries whose first byte is $FF. For each active object it follows the pointer at IX+$10..$11 into the name stream at #R$6A4F and runs the stream-walker at $8DEB:
+@ $8D5D label=DRAW_NAVMAP
+c $8D5D Render the navigation-map screen
+D $8D5D Two-pass renderer for the in-game navigation map (see images/cyclone-map.png). Triggered from the main loop at $5B71-$5B81 when bit 4 of ($7526) is set: that path calls #R$8D0E (clear playfield to white-on-white), then #R$8D5D (this routine — draws icons + names), then #R$8E5C (HUD), then #R$8F6A (helicopter cursor).
+D $8D5D Pass 1 ($8D5D-$8DDF): walks the 14-island master table at #R$F230 and decodes a small monochrome island-icon sprite for each, painting it at the screen position stored in the record. The sprite-decode loop at $8D7D-$8DA9 reads source bytes from `shape_base + $0102` (where shape_base = IX+$0A/$0B): for each output bit, it samples one source byte at stride 4 and sets the bit if the byte is >= $0F (so the source data is a 4-byte-per-pixel attribute-like stream that the renderer thresholds into a bitmap). IX+$0E gives the column count for the inner loop (sprite width in source samples), IX+$0F gives the row count for the outer loop (sprite height). Between rows the renderer adds $0200 to the source pointer (= 2 Spectrum scanlines) and advances the destination by one scanline. The destination starts at IX+$0C/$0D — a hand-laid display-file address that determines where on the nav-map screen this island's icon appears. (See `tools/extract_map.py:decode_navmap_sprite` for a Python reimplementation.)
+D $8D5D Pass 2 ($8DE2 onwards): walks the same table again, this time following the pointer at IX+$10..$11 into the name stream at #R$6A4F and running the stream-walker at $8DEB:
 D $8D5D   * character bytes $00-$FB are rendered via the 8-byte font at $6908 (see #R$8E15);
 D $8D5D   * $FC bails on the current char;
 D $8D5D   * $FD = emit the shared '?ISLAND' suffix (see #R$8E10);
@@ -706,7 +710,7 @@ D $8D5D   * $FE = advance to the next object record (IX += $14);
 D $8D5D   * $FF = end of stream, RET.
 D $8D5D The name data at $6A50 is therefore not 15 flat strings but a compact control stream shared across every named location the helicopter can fly to.
 c $8D97 Shift-left multiplier (SLA C * B)
-D $8D97 SLA C inside a DJNZ loop — i.e. C <<= B. Inline multiply-by-power-of-2.
+D $8D97 SLA C inside a DJNZ loop — i.e. C <<= B. Inline multiply-by-power-of-2. Used by #R$8D5D's sprite-decode pass to MSB-align the bit pattern when the inner loop exited early (E reached zero before all 8 inner iterations completed).
 c $8E10 Emit '?ISLAND' suffix string from the name-stream
 D $8E10 One of the control opcodes in the name-rendering stream ($FD) jumps here. Loads HL=$6AC2 which points at the "?ISLAND" string (and the "?" renders as a space), then falls into the character emitter at $8E15. Used to avoid repeating "ISLAND" in every level name in #R$6A50.
 c $8E3D
@@ -2161,8 +2165,9 @@ D $F230   +$06  z_min         altitude / Z lower bound
 D $F230   +$07  z_max         altitude / Z upper bound
 D $F230   +$08..+$09          secondary bounds (altitude mid / size?)
 D $F230   +$0A..+$0B          runtime shape-work-buffer pointer (populated by the 3D projector, zero in this pre-init snapshot)
-D $F230   +$0C..+$0D          display-file address at which to paint the projected shape
-D $F230   +$0E..+$0F          additional work field
+D $F230   +$0C..+$0D          navmap_screen_addr — display-file address where this island's icon is painted on the navigation-map screen (#R$8D5D pass 1)
+D $F230   +$0E                navmap_sprite_width — column count for #R$8D5D's inner sprite-decode loop
+D $F230   +$0F                navmap_sprite_height — row count for #R$8D5D's outer sprite-decode loop
 D $F230   +$10..+$11          unused by the name walker (self-modified slot, see #R$8DEB)
 D $F230   +$12                attribute-file HIGH byte for the paint target
 D $F230   +$13                $00 — record terminator byte
@@ -2183,7 +2188,10 @@ D $F230   $F2F8  GIANTS GATEWAY     x=152-203  y= 12- 80  z=174-181
 D $F230   $F30C  CLAW ISLAND        x=196-253  y=192-254  z=218-231
 D $F230   $F320  LUKELAND ISLES     x= 48-109  y= 48-108  z= 70- 87
 D $F230   $F334  ENTERPRISE ISLAND  x= 68-139  y=176-251  z= 90-117
-D $F230 IX+$0A/$0B is a base pointer into the island shape data at $9300-$CFFF. That region is empty in this pre-init snapshot but is populated once the SpeedLock loader has finished — see the mid-gameplay snapshot from `make midgame`. Each island's shape is a 256-byte, 16x16 tile-index map read by #R$7777 as HL = base + ((#R$7500) - IX+$06), with each byte indexing the 8x8-pixel glyph font at $FA00 (same font used by #R$762C). Multiple sparse islands share a 256-byte page (e.g. BANANA+GILLIGANS+GIANTS all live in $9300-$93FF at offsets 0, $54, $37). See ISLANDS.md for the rendered shapes.
+D $F230 IX+$0A/$0B is a base pointer into the island shape data at $9300-$CFFF. That region is empty in this pre-init snapshot but is populated once the SpeedLock loader has finished — see the mid-gameplay snapshot from `make midgame`. The base address is used by two distinct render paths:
+D $F230   * Flight mode (#R$7777): each byte of the 256-byte block at `shape_base` is a tile-index into the 8x8 font at $FA00. The flight engine reads HL = base + (($7500) - IX+$06) and renders that character into the projected display-file slot. The non-zero tile indices map to per-tile OBJECTS (people, palm trees, fuel pods, etc.) that are placed across the island at flight scale — NOT a silhouette of the coastline.
+D $F230   * Navigation-map mode (#R$8D5D): the renderer reads from `shape_base + $0102` instead, decoding it through a 4-byte-stride threshold-and-pack loop into a small monochrome island-shape icon. Each island has a unique sprite at this offset; e.g. BANANA's nav-map sprite source is at $9402, GILLIGANS at $9456, GIANTS at $9439.
+D $F230 Multiple sparse islands share a 256-byte page (e.g. BANANA+GILLIGANS+GIANTS all live in $9300-$93FF at offsets 0, $54, $37). See ISLANDS.md for the flight-mode object layouts and `build/cyclone-map.json` for the decoded nav-map sprites.
 @ $F34A label=FLASH_HUD
 c $F34A Border/HUD flash (late-frame)
 c $F35A

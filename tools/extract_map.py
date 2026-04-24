@@ -7,14 +7,19 @@ any language or engine — no Z80 emulator required at consumption time:
 
   - 14 island records from the master table at $F230
     (type, sub-type, world bounds, altitude bounds, shape pointer, etc.)
-  - per-island 16x16 tile-index grids from each island's +$0A/+$0B base
+  - per-island NAVIGATION-MAP sprite + screen position
+    (decoded by the algorithm at $8D5D-$8DA9 — reads source bytes from
+    shape_base+$0102 at stride 4 with threshold $0F, packs into bitmap)
+  - per-island 16x16 OBJECT layout (people / palm trees / fuel pods at
+    each tile of an island; this is what the flight engine projects via
+    #R$7777, NOT a silhouette of the island shape)
   - the 8x8-pixel glyph font at $FA00 (1536 bytes -> 192 glyphs)
   - the tile attribute table at $FE00 (256 attribute bytes,
     decoded into ink/paper/bright/flash)
 
 Decoding references in cyclone.ctl: the master record schema is documented
-at $F230, the tile renderer is #R$762C, and the world coordinates live at
-($7500)/($7502).  See ISLANDS.md for the human summary.
+at $F230, the tile renderer is #R$762C, the navigation-map renderer is
+$5B71-$5B81 -> $8D5D, and the world coordinates live at ($7500)/($7502).
 
 Usage:
     python3 tools/extract_map.py [SNAPSHOT] [OUTPUT.json]
@@ -73,6 +78,55 @@ def decode_attribute(byte: int) -> dict:
     }
 
 
+def decode_screen_addr(addr: int) -> dict:
+    """Decode a Spectrum display-file address into (col, char_row, y).
+
+    Layout: bit 13 = $4000 base flag; bits 12-11 = y bits 7-6; bits 10-8 =
+    y bits 2-0; bits 7-5 = y bits 5-3; bits 4-0 = x // 8.
+    """
+    col = addr & 0x1F
+    y_top = (addr >> 11) & 0x03   # y[7:6]
+    y_low = (addr >> 8) & 0x07    # y[2:0]
+    y_mid = (addr >> 5) & 0x07    # y[5:3]
+    y = (y_top << 6) | (y_mid << 3) | y_low
+    return {"col": col, "char_row": y // 8, "pixel_y": y, "raw": f"0x{addr:04X}"}
+
+
+def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -> list:
+    """Decode an island's nav-map sprite using the algorithm at $8D5D-$8DA9.
+
+    The renderer walks `height` rows.  Each row reads `width` source bytes
+    at stride 4 from `shape_base + $0102`, packing the high-bit of "byte
+    >= $0F" into a bit pattern that becomes the row's display-file bytes.
+    Source rows are spaced by `+$0200` (2 scanlines on a Spectrum, which
+    matches how the renderer advances HL between rows).
+    """
+    def get(addr):
+        a = addr & 0xFFFF
+        return ram[a - 0x4000] if 0x4000 <= a else 0
+
+    src = (shape_base + 0x0102) & 0xFFFF
+    rows = []
+    for row in range(height):
+        row_src = (src + row * 0x0200) & 0xFFFF
+        e = width
+        offset = 0
+        bits = []
+        while e > 0:
+            c = 0
+            b = 8
+            while b > 0 and e > 0:
+                byte = get(row_src + offset)
+                c = ((c << 1) | (1 if byte >= 0x0F else 0)) & 0xFF
+                offset += 4
+                e -= 1
+                b -= 1
+            c = (c << b) & 0xFF
+            bits.append(c)
+        rows.append(bits)
+    return rows
+
+
 def extract(snapshot_path: str) -> dict:
     snap = Snapshot.get(snapshot_path)
     ram = bytes(snap.ram(-1))
@@ -106,6 +160,11 @@ def extract(snapshot_path: str) -> dict:
         tiles = list(at(shape_base, 256))
         grid = [tiles[row * 16 : (row + 1) * 16] for row in range(16)]
 
+        navmap_w = rec[0x0E]
+        navmap_h = rec[0x0F]
+        navmap_sprite = decode_navmap_sprite(ram, shape_base, navmap_w, navmap_h)
+        navmap_sprite_addr = (shape_base + 0x0102) & 0xFFFF
+
         islands.append({
             "index": i,
             "name": ISLAND_NAMES[i],
@@ -119,12 +178,17 @@ def extract(snapshot_path: str) -> dict:
             "altitude": {"z_min": rec[0x06], "z_max": rec[0x07]},
             "secondary_bounds": [rec[0x08], rec[0x09]],
             "shape_base": f"0x{shape_base:04X}",
-            "display_addr": f"0x{display_addr:04X}",
-            "extra_work": [rec[0x0E], rec[0x0F]],
+            "navmap_position": decode_screen_addr(display_addr),
+            "navmap_sprite": {
+                "source_addr": f"0x{navmap_sprite_addr:04X}",
+                "width_cols": navmap_w,
+                "height_rows": navmap_h,
+                "bitmap": navmap_sprite,
+            },
             "name_stream_ptr": f"0x{rec[0x10] | (rec[0x11] << 8):04X}",
             "attribute_high_byte": f"0x{attr_high:02X}",
             "raw_record": [f"0x{b:02X}" for b in rec],
-            "tiles": grid,
+            "object_tiles_at_shape_base": grid,
         })
 
     # Glyph font at $FA00.  Only addresses up to $FFFF are real RAM, so the
@@ -183,12 +247,22 @@ def extract(snapshot_path: str) -> dict:
             {"offset": "+0x07", "field": "z_max"},
             {"offset": "+0x08..+0x09", "field": "secondary_bounds"},
             {"offset": "+0x0A..+0x0B", "field": "shape_base_pointer"},
-            {"offset": "+0x0C..+0x0D", "field": "display_file_addr"},
-            {"offset": "+0x0E..+0x0F", "field": "extra_work"},
+            {"offset": "+0x0C..+0x0D", "field": "navmap_screen_addr (display-file address where this island's icon is drawn on the navigation-map screen)"},
+            {"offset": "+0x0E", "field": "navmap_sprite_width (columns for $8D5D inner loop)"},
+            {"offset": "+0x0F", "field": "navmap_sprite_height (rows for $8D5D outer loop)"},
             {"offset": "+0x10..+0x11", "field": "name_stream_ptr"},
             {"offset": "+0x12", "field": "attribute_high_byte"},
             {"offset": "+0x13", "field": "record_terminator"},
         ],
+        "navmap_renderer": {
+            "trigger": "main loop $5B71-$5B81 (when bit 4 of ($7526) is set)",
+            "walker": "$8D5D — walks $F230 records emitting both sprite and name per island",
+            "sprite_decoder": "$8D7D-$8DA9 — reads source bytes at stride 4 with threshold $0F, packs into display-file bitmap",
+            "sprite_source_offset": "shape_base + 0x0102",
+            "row_stride_bytes": 0x0200,
+            "byte_threshold": 0x0F,
+            "column_stride": 4,
+        },
         "islands": islands,
         "tile_glyphs": glyphs,
         "tile_attributes": attributes,
