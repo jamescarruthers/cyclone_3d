@@ -244,8 +244,9 @@ b $69D2
 b $69D6
 b $69DA
 b $69E8
-t $6A50 Level / island name table
-D $6A50 The 15 level names Cyclone flies between: BANANA, FORTE ROCKS, KOKOLA, LAGOON PEAK, BASE, GILLIGANS, RED SKEG, BONE, GIANTS GATEWAY, CLAW, LUKELAND ISLES, ENTERPRISE, ISLAND. Names are interleaved with $FD/$FE separator bytes; '?' renders as space in the game's font. Used by the map / briefing screen.
+t $6A50 Location name stream (shared world-map islands)
+D $6A50 The 15 named *locations* on Cyclone's single shared archipelago map — NOT per-level maps. The same geography hosts every mission; only the objectives change between plays. Names: BANANA, FORTE ROCKS, KOKOLA, LAGOON PEAK, BASE, GILLIGANS, RED SKEG, BONE, GIANTS GATEWAY, CLAW, LUKELAND ISLES, ENTERPRISE, ISLAND.
+D $6A50 Encoded as a control stream (see #R$8D5D): bytes $00-$FB index an 8-byte font at $6908; $FC terminates a char; $FD emits the shared '?ISLAND' suffix stored at #R$6AC2 (the '?' renders as a space in the font); $FE advances to the next object record; $FF ends the stream. Each location's bytes are pointed at by the IX+$10/$11 field in the 20-byte object records at $F230.
 b $6A56
 t $6A57
 b $6A61
@@ -560,14 +561,28 @@ c $80D8
 c $8104
 c $8133
 c $8152
-c $81A6
-c $81CB
+c $81A6 Helicopter physics — self-modifying XY position update
+D $81A6 The helicopter's world position is held in the 16-bit variables ($7500) and ($7502). Every frame this routine patches a single byte into each of two slots ($81EF and $81F6) and then runs through 'LD HL,(pos); <patched opcode>; LD (pos),HL' — the patched opcode is one of $00 (NOP, no move), $23 (INC HL, +1) or $2B (DEC HL, -1), selected from the delta table at #R$826F.
+D $81A6 The index into #R$826F is derived from the current difficulty / skill dial at ($7527) and the menu state ($7516). $81B9-$81CE walks ($7527) in the range 0-7 depending on whether BIT 0 of C is set, and $81DC reads A=($7527) (or a copy in $753B) and uses it as the table offset. Each table entry is a pair (X-delta, Y-delta), so stepping by $0001 in the table advances both axes simultaneously.
+D $81A6 The approach means the "engine" has zero inner-loop branching — the delta bytes are baked into the live instruction stream. Changing the helicopter's feel (faster / different trajectories) requires editing the table, not the code.
+c $81CB Skill-dial increment (wraparound at 7)
+D $81CB Increments ($7527), clamping at 7, then copies ($7506)->$753B and falls into #R$81A6 to apply the motion step. Called when BIT 0 of the joystick byte C fires (the "thrust" bit).
 c $8214
 c $8232
 c $824C
 c $8269
-b $826F
-b $827D
+b $826F Helicopter motion delta table (opcode pairs)
+D $826F 14 bytes = 7 pairs of (X-delta-opcode, Y-delta-opcode), each pair self-modified into #R$81A6 between the LD HL,(pos) and LD (pos),HL instructions. Decoded:
+D $826F   0: ( $00 NOP , $2B DEC HL ) = move down
+D $826F   1: ( $23 INC HL, $2B DEC HL ) = move right+down
+D $826F   2: ( $23 INC HL, $00 NOP   ) = move right
+D $826F   3: ( $23 INC HL, $23 INC HL) = move right+up
+D $826F   4: ( $00 NOP , $23 INC HL ) = move up
+D $826F   5: ( $2B DEC HL, $23 INC HL) = move left+up
+D $826F   6: ( $2B DEC HL, $00 NOP   ) = move left
+D $826F The missing 8th pair (left+down) may be encoded by the next 2 bytes at #R$827D ($2B $2B).
+b $827D Likely tail of the motion table (left+down delta pair)
+D $827D The first two bytes $2B $2B complete the 8-direction delta table started at #R$826F (left+down = DEC HL, DEC HL). The remaining four bytes $53 $4F $55 $54 spell 'SOUT' — probably the tail of a compass / heading string that lives nearby (not yet located).
 c $8283
 @ $8284 label=PRE_INPUT_TICK
 c $8284 Pre-input tick (fuel/score decrement?)
@@ -682,15 +697,23 @@ s $8D0A
 @ $8D0E label=CLEAR_PLAY_AREA
 c $8D0E Clear the play area (preserves scoreboard)
 D $8D0E Writes $3F (FLASH|BRIGHT|white-on-white mask) across 22 rows of 23 columns of attributes from $5800 onwards — i.e. the left-hand 23x22 play area, leaving the rightmost 9 attribute columns alone for the HUD/scoreboard. Then walks the matching 23 pixel columns over 22 rows and zero-fills the bitmap using the classic 8x8 cell pattern (INC H 8 times, then INC HL and the RR H / RL H trick to advance one cell right). Called from #R$5B00 each frame.
-c $8D5D Walk object table at $F230 via IX+$0C/$0D pointer
-D $8D5D Reads the 16-bit pointer field at IX+$0C..$0D out of each object record, follows it into HL. Part of the linked-list traversal of active game objects.
+c $8D5D Walk object table at $F230 + emit level-name stream
+D $8D5D Steps through the object table at $F230 in $14-byte records, skipping entries whose first byte is $FF. For each active object it follows the pointer at IX+$10..$11 into the name stream at #R$6A4F and runs the stream-walker at $8DEB:
+D $8D5D   * character bytes $00-$FB are rendered via the 8-byte font at $6908 (see #R$8E15);
+D $8D5D   * $FC bails on the current char;
+D $8D5D   * $FD = emit the shared '?ISLAND' suffix (see #R$8E10);
+D $8D5D   * $FE = advance to the next object record (IX += $14);
+D $8D5D   * $FF = end of stream, RET.
+D $8D5D The name data at $6A50 is therefore not 15 flat strings but a compact control stream shared across every named location the helicopter can fly to.
 c $8D97 Shift-left multiplier (SLA C * B)
 D $8D97 SLA C inside a DJNZ loop — i.e. C <<= B. Inline multiply-by-power-of-2.
-c $8E10
+c $8E10 Emit '?ISLAND' suffix string from the name-stream
+D $8E10 One of the control opcodes in the name-rendering stream ($FD) jumps here. Loads HL=$6AC2 which points at the "?ISLAND" string (and the "?" renders as a space), then falls into the character emitter at $8E15. Used to avoid repeating "ISLAND" in every level name in #R$6A50.
 c $8E3D
 s $8E53
-c $8E5C Draw sprite table to display file
-D $8E5C Takes a table pointed at by IX=$7438, DE=$4000 (display file top), and walks 8-high bitmaps into the screen. One of the main background renderers.
+c $8E5C Paint cockpit/HUD — fixed instrument panel
+D $8E5C Draws the fixed cockpit graphics into the top-left corner of the display file. It walks ten small 8-byte sprite strips at $7438, $7440, $7448, $7460, $7470, $7480, $7488, $7490 (the radar frame, compass ring, altitude ticks, fuel-gauge outline, etc.) into fixed screen addresses ($4000, $4020, $4036, $50A0, ...). Then at $8EBC-onwards it calls #R$859A to stamp the single-character labels (digits, compass letters) from the inline strings at $8F0C+.
+D $8E5C Called from the main init / screen-redraw sequence — not once per frame, since the HUD is static. The dynamic needles/markers are drawn on top by separate routines.
 c $8EE8 Sprite blit inner loop (8 rows)
 D $8EE8 Saves IX/DE, loops 8 times reading IX+$00..+$07 into the display file — the generic 1-cell-high, 8-pixel-tall blit kernel used by #R$8E5C and friends.
 c $8F0C
@@ -2126,30 +2149,41 @@ b $F0C5
 b $F0C8
 b $F217
 b $F21A
-b $F240
-b $F243
-b $F254
-b $F257
-b $F282
-b $F285
-b $F286
-b $F28A
-b $F28B
-b $F28E
-b $F29A
-b $F29E
-b $F2AE
-b $F2B3
-b $F2CC
-b $F2CF
-b $F2E0
-b $F2E3
-b $F300
-b $F303
-b $F308
-b $F30B
-b $F322
-c $F326
+b $F230 Island master table — 14 locations on the shared world map
+D $F230 The 20-byte-per-record table that defines every named island in Cyclone. Decoded structure (offsets from the record start, matched to the reads in #R$76D2 / #R$7777 / #R$8D5D / #R$8DEB):
+D $F230   +$00  type byte     (values $00/$01/$02 — graphic/category)
+D $F230   +$01  sub-type      (values $00/$01/$02)
+D $F230   +$02  x_min         world X lower bound
+D $F230   +$03  x_max         world X upper bound
+D $F230   +$04  y_min         world Y lower bound (compared with ($7502) at $770A)
+D $F230   +$05  y_max         world Y upper bound
+D $F230   +$06  z_min         altitude / Z lower bound
+D $F230   +$07  z_max         altitude / Z upper bound
+D $F230   +$08..+$09          secondary bounds (altitude mid / size?)
+D $F230   +$0A..+$0B          runtime shape-work-buffer pointer (populated by the 3D projector, zero in this pre-init snapshot)
+D $F230   +$0C..+$0D          display-file address at which to paint the projected shape
+D $F230   +$0E..+$0F          additional work field
+D $F230   +$10..+$11          unused by the name walker (self-modified slot, see #R$8DEB)
+D $F230   +$12                attribute-file HIGH byte for the paint target
+D $F230   +$13                $00 — record terminator byte
+D $F230 The 14 records map 1:1 to the 14 named locations in the name stream at #R$6A50 (BANANA ISLAND, FORTE ROCKS, KOKOLA ISLAND, LAGOON ISLAND, PEAK ISLAND, BASE ISLAND, GILLIGANS ISLAND, RED ISLAND, SKEG ISLAND, BONE ISLAND, GIANTS GATEWAY, CLAW ISLAND, LUKELAND ISLES, ENTERPRISE ISLAND). Each name is either $FD-terminated (renderer appends ' ISLAND') or $FE-terminated (rendered as-is).
+D $F230 An $FF byte at $F348 marks the end of the table — #R$8D5D bails when IX+$00 = $FF.
+D $F230 Decoded island world coordinates (centres/bounding boxes):
+D $F230   $F230  BANANA ISLAND      x= 92-168  y=128-184  z=114-146
+D $F230   $F244  FORTE ROCKS        x=136-211  y=  0- 57  z=158-189
+D $F230   $F258  KOKOLA ISLAND      x= 87-161  y=148-204  z=109-139
+D $F230   $F26C  LAGOON ISLAND      x=116-203  y=184-240  z=138-181
+D $F230   $F280  PEAK ISLAND        x= 40-101  y= 88-144  z= 62- 79
+D $F230   $F294  BASE ISLAND        x= 28-130  y= 80-136  z= 50-108
+D $F230   $F2A8  GILLIGANS ISLAND   x= 28- 94  y= 88-145  z= 50- 72
+D $F230   $F2BC  RED ISLAND         x=120-182  y= 64-120  z=142-160
+D $F230   $F2D0  SKEG ISLAND        x=112-173  y=  0- 56  z=134-151
+D $F230   $F2E4  BONE ISLAND        x=172-255  y=124-180  z=194-233
+D $F230   $F2F8  GIANTS GATEWAY     x=152-203  y= 12- 80  z=174-181
+D $F230   $F30C  CLAW ISLAND        x=196-253  y=192-254  z=218-231
+D $F230   $F320  LUKELAND ISLES     x= 48-109  y= 48-108  z= 70- 87
+D $F230   $F334  ENTERPRISE ISLAND  x= 68-139  y=176-251  z= 90-117
+D $F230 IX+$0A/$0B is a base pointer into the island shape data at $9300-$CFFF. That region is empty in this pre-init snapshot but is populated once the SpeedLock loader has finished — see the mid-gameplay snapshot from `make midgame`. Each island's shape is a 256-byte, 16x16 tile-index map read by #R$7777 as HL = base + ((#R$7500) - IX+$06), with each byte indexing the 8x8-pixel glyph font at $FA00 (same font used by #R$762C). Multiple sparse islands share a 256-byte page (e.g. BANANA+GILLIGANS+GIANTS all live in $9300-$93FF at offsets 0, $54, $37). See ISLANDS.md for the rendered shapes.
 @ $F34A label=FLASH_HUD
 c $F34A Border/HUD flash (late-frame)
 c $F35A

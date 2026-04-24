@@ -56,6 +56,16 @@ map: $(MAP)
 $(MAP): $(RZX) | $(BUILD)
 	rzxplay.py --no-screen --fps 0 --quiet --map $(MAP) $(RZX)
 
+midgame: $(BUILD)/cyclone-endgame.z80
+
+$(BUILD)/cyclone-endgame.z80: $(RZX) | $(BUILD)
+	rzxplay.py --no-screen --fps 0 --quiet $(RZX) $(BUILD)/cyclone-endgame.z80
+
+worldmap: $(BUILD)/cyclone-world.png
+
+$(BUILD)/cyclone-world.png: $(BUILD)/cyclone-endgame.z80 tools/render_map.py
+	python3 tools/render_map.py $(BUILD)/cyclone-endgame.z80 $(BUILD)/cyclone-world.png
+
 ctl-rzx: $(AUTO_RZX)
 
 $(AUTO_RZX): $(SNAP) $(MAP) | $(BUILD)
