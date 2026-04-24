@@ -22,22 +22,44 @@ render the screen.
 
 ## Full archipelago reconstruction
 
+Two independent reconstructions — they show the same islands in the
+same places, but reach the result two different ways.
+
+### 1. From only the tape data (no RZX)
+
+![Cyclone world from data](images/cyclone-world-fromdata.png)
+
+*Reconstructed purely from `build/cyclone.z80`, the snapshot built by
+`tap2sna.py` directly from the original tape.*
+`tools/render_world_fromdata.py` reads the 14-island master table at
+`$F230`, walks each island's `16×16` tile map at its `+$0A/+$0B` base
+pointer, resolves each tile against the font at `$FA00` and the colour
+table at `$FE00`, and composites every island at its decoded world
+centre. It does not run the Z80 and does not use the RZX.
+
+If any of the table addresses, field offsets or data-structure sizes
+were off, islands would appear in wrong places or as the wrong shape.
+They don't — which is the strongest possible confirmation that the
+numbers in `cyclone.ctl` describe the real data layout.
+
+### 2. From live RZX gameplay (uses the game's own renderer)
+
 ![Cyclone full world map](images/cyclone-full-map.png)
 
-*A complete reconstruction of Cyclone's world. `tools/build_full_map.py`
-scans the shipped RZX at 1500-frame intervals, reads the helicopter's
-world coordinates from (`$7500`, `$7502`) at each sample, picks the
-frame where the helicopter is best-centred over each island (bounds
-decoded from the master table at `$F230`), crops the playfield, masks
-out the sea, and composites all 14 islands onto a 2048×2048 canvas.*
+*A higher-fidelity reconstruction using the game's own isometric
+renderer.* `tools/build_full_map.py` scans the shipped RZX at
+1500-frame intervals, reads the helicopter's world coordinates from
+(`$7500`, `$7502`) at each sample, picks the frame where the helicopter
+is best-centred over each island (bounds from `$F230`), crops the
+playfield, masks out the sea, and composites all 14 islands onto a
+2048×2048 canvas.
 
 Every step uses data or code we've identified from the original:
 
 - The 14 island **world positions** come from the master table at
-  `$F230` (decoded fields `+$02..+$05` for the X/Y bounds).
+  `$F230` (fields `+$02..+$05`).
 - The **helicopter position variables** are `($7500)` and `($7502)`,
-  identified by cross-referencing reads across `$76D2`, `$7777`, `$77B7`
-  etc.
+  identified by cross-referencing reads across `$76D2`, `$7777`, `$77B7`.
 - The **visual rendering** is done by Cyclone's own engine while
   `rzxplay.py` replays the RZX — we just capture the resulting display
   file via `sna2img.py`.
@@ -45,8 +67,8 @@ Every step uses data or code we've identified from the original:
   tell 3-D flight frames (cyan paper) from navigation-map frames
   (white paper) — the attribute layout is decoded in `cyclone.ctl`.
 
-That the reconstructed archipelago matches published reference maps
-(e.g. Pavero, 2004) validates the decoding.
+Both reconstructions place every island at the same world location;
+both match published reference maps (e.g. Pavero, 2004).
 
 The master table lives at `$F230` in the post-load snapshot. Each record is
 20 bytes (`$14`); there are 14 records followed by an `$FF` end-marker at

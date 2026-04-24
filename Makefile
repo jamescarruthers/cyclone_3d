@@ -98,6 +98,17 @@ images/cyclone-full-map.png: $(SCAN_DIR)/.done tools/build_full_map.py
 	mkdir -p images
 	python3 tools/build_full_map.py $(SCAN_DIR) images/cyclone-full-map.png
 
+# Zero-RZX reconstruction: reads the island master table, shape tiles,
+# tile font and tile attributes directly out of the tap2sna snapshot and
+# composites the archipelago purely in Python.  If this produces the
+# expected layout, everything we've decoded about island geography lives
+# in the data we extracted — no emulator state needed.
+images/cyclone-world-fromdata.png: $(SNAP) tools/render_world_fromdata.py
+	mkdir -p images
+	python3 tools/render_world_fromdata.py $(SNAP) images/cyclone-world-fromdata.png
+
+worldmap: images/cyclone-world-fromdata.png
+
 ctl-rzx: $(AUTO_RZX)
 
 $(AUTO_RZX): $(SNAP) $(MAP) | $(BUILD)
