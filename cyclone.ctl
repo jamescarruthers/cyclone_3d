@@ -39,7 +39,7 @@ D $5B00 Top-level per-frame routine entered after the SpeedLock loader finishes 
 D $5B00 The two bytes at $5B5A-$5B5C sample ($7505), a game-mode flag: 01 means "in attract mode / demo" and jumps to #R$9246. Further branches check ($7526) joystick/input-method flags to decide which scanner to call (#R$762C vs #R$80AA).
 D $5B00 Near the end, IN A,($FE) with A=$FD at $5BDD reads keyboard row A-G; if both A and G are held, the frame ends by jumping to the death/reset handler #R$E280.
 c $5B86 Frame dispatch (cursor/joystick variant)
-D $5B86 Called from #R$MAIN_LOOP when ($7526) bit 1 is clear (keyboard-only input).
+D $5B86 Called from #R$5B00 when ($7526) bit 1 is clear (keyboard-only input).
 c $5BEC Display "NO FUEL" message
 D $5BEC Tail-call into #R$92D0 with HL pointing at the fixed message string at #R$5BF2. Triggered when the fuel counter reaches zero.
 t $5BF2 " NO FUEL " message text
@@ -427,7 +427,7 @@ b $74BC
 b $74D1
 b $74D4
 b $74D6 Game state variables (starting bank)
-D $74D6 Roughly 260 bytes of scalar game state plus two parallel 'save state' blocks. Addresses referenced by the code include: ($7500)/($7502) object X/Y, ($7504) control method (0=joystick,1=keys,3=cursor), ($7505) demo flag, ($7515)/($7516) level indices, ($7517) live level state, ($7522) packed input bits (from #R$READ_INPUT), ($7526) menu/input-method bits, ($7527) difficulty, ($7528) pause flag, ($752D) dying flag, ($752E) mode switch, ($7537) three-frame counter (see #R$8B91), ($753B) active level, ($7555) explosion timer, ($7FD5) saved control method.
+D $74D6 Roughly 260 bytes of scalar game state plus two parallel 'save state' blocks. Addresses referenced by the code include: ($7500)/($7502) object X/Y, ($7504) control method (0=joystick,1=keys,3=cursor), ($7505) demo flag, ($7515)/($7516) level indices, ($7517) live level state, ($7522) packed input bits (from #R$7FD6), ($7526) menu/input-method bits, ($7527) difficulty, ($7528) pause flag, ($752D) dying flag, ($752E) mode switch, ($7537) three-frame counter (see #R$8B91), ($753B) active level, ($7555) explosion timer, ($7FD5) saved control method.
 D $74D6 The blocks at $7560-$75A7 and $75C8-$75E7 look like two mirrored 72-byte save states (note $75C8 repeats the same $39 $01 $70 $01 header as $7560). Likely one is current, the other is the backed-up initial state used to restart the level.
 b $754E
 b $7550
@@ -548,13 +548,13 @@ b $7FAC
 c $7FD6 Keyboard / joystick input dispatcher
 D $7FD6 Reads the control-method byte at ($7504): 00 = Sinclair-style joystick (falls through to #R$7FE8); 03 = cursor keys (jumps to #R$8079); anything else = custom keys (#R$8023). Each branch packs the movement/fire state into a single byte at ($7522) where bits 0-4 mean up/down/left/right/fire.
 c $8023 Custom-keys input scanner
-D $8023 Reads keyboard half-rows $EF (P-Y) and $F7 (1-5) and packs the resulting directions/fire flag into ($7522). Called from #R$READ_INPUT when the player has chosen a user-defined key layout.
+D $8023 Reads keyboard half-rows $EF (P-Y) and $F7 (1-5) and packs the resulting directions/fire flag into ($7522). Called from #R$7FD6 when the player has chosen a user-defined key layout.
 c $8052
 c $8079 Cursor-keys input scanner
 D $8079 Reads half-rows $F7 (1-5) and $EF (P-Y) to pick up the Sinclair cursor keys (5=left, 6=down, 7=up, 8=right, 0=fire) and packs the resulting state in ($7522).
 s $80A6
 c $80AA Pause / attract-mode toggle (SPACE key)
-D $80AA Polls half-row $7F (SPACE/B/N/M/SymShift) for SPACE, debounces it against a flag at ($7526) bit 0, and optionally beeps the ROM tone at #R$03B5 to acknowledge the keypress.
+D $80AA Polls half-row $7F (SPACE/B/N/M/SymShift) for SPACE, debounces it against a flag at ($7526) bit 0, and optionally beeps the ROM tone at $03B5 to acknowledge the keypress.
 c $80D2
 c $80D8
 c $8104
@@ -617,7 +617,7 @@ c $864B
 c $8681
 s $86AC
 c $86AF Object/frame counter update
-D $86AF Zeros ($7512), increments ($750D), walks a pointer table at $FE66. Advances the per-frame counters used by #R$UPDATE_OBJECTS.
+D $86AF Zeros ($7512), increments ($750D), walks a pointer table at $FE66. Advances the per-frame counters used by #R$87F0.
 c $8741
 c $875A
 c $8770
@@ -666,7 +666,7 @@ R $8B74 O:HL new 16-bit random number
 c $8B91 Frame counter (modulo 3)
 D $8B91 Increments the byte at ($7537); when it wraps past 3, zeroes it and falls through to #R$8BA2. Drives one-in-three event timing.
 c $8BA2 Three-frame tick handler
-D $8BA2 Tail of the #R$8B91 counter: zeroes ($7537), calls #R$RANDOM to advance the seed, sets D=1 as a reset flag for downstream calls.
+D $8BA2 Tail of the #R$8B91 counter: zeroes ($7537), calls #R$8B74 to advance the seed, sets D=1 as a reset flag for downstream calls.
 c $8BC6 Select player-skill ladder
 D $8BC6 Picks between two difficulty tables at $8C66 (keyboard) and $8C77 (joystick) based on ($7504), then indexes with ($7506). Feeds into #R$8BD5 / #R$8C19 which writes a self-modifying offset.
 c $8BD2 Skill ladder (joystick path)
@@ -681,7 +681,7 @@ c $8CEE
 s $8D0A
 @ $8D0E label=CLEAR_PLAY_AREA
 c $8D0E Clear the play area (preserves scoreboard)
-D $8D0E Writes $3F (FLASH|BRIGHT|white-on-white mask) across 22 rows of 23 columns of attributes from $5800 onwards — i.e. the left-hand 23x22 play area, leaving the rightmost 9 attribute columns alone for the HUD/scoreboard. Then walks the matching 23 pixel columns over 22 rows and zero-fills the bitmap using the classic 8x8 cell pattern (INC H 8 times, then INC HL and the RR H / RL H trick to advance one cell right). Called from #R$MAIN_LOOP each frame.
+D $8D0E Writes $3F (FLASH|BRIGHT|white-on-white mask) across 22 rows of 23 columns of attributes from $5800 onwards — i.e. the left-hand 23x22 play area, leaving the rightmost 9 attribute columns alone for the HUD/scoreboard. Then walks the matching 23 pixel columns over 22 rows and zero-fills the bitmap using the classic 8x8 cell pattern (INC H 8 times, then INC HL and the RR H / RL H trick to advance one cell right). Called from #R$5B00 each frame.
 c $8D5D Walk object table at $F230 via IX+$0C/$0D pointer
 D $8D5D Reads the 16-bit pointer field at IX+$0C..$0D out of each object record, follows it into HL. Part of the linked-list traversal of active game objects.
 c $8D97 Shift-left multiplier (SLA C * B)
@@ -1953,7 +1953,7 @@ b $E065
 b $E06B
 @ $E280 label=DEATH
 c $E280 Death / game-over / reset sequence
-D $E280 Entered when the player dies (low fuel with #R$5BEC, A+G key combo at $5BE9 in the main loop, or the IM2 handler at $8C9D). Sets the "dying" flag ($752D) to 1, plays a falling-tone beeper via ROM #R$03B5 (HL=$0666, DE=$0055), waits in a loop for #R$E3F8 to return NC, then calls #R$CLEAR_SCREEN and #R$E2E8 to repaint. Finally reloads the saved control state from ($7FD5) and drops through to the menu at $E2BD.
+D $E280 Entered when the player dies (low fuel with #R$5BEC, A+G key combo at $5BE9 in the main loop, or the IM2 handler at $8C9D). Sets the "dying" flag ($752D) to 1, plays a falling-tone beeper via ROM $03B5 (HL=$0666, DE=$0055), waits in a loop for #R$E3F8 to return NC, then calls #R$84D6 and #R$E2E8 to repaint. Finally reloads the saved control state from ($7FD5) and drops through to the menu at $E2BD.
 c $E29E Title-screen key poll loop
 D $E29E Polls the object-table scanner #R$FE92 and the keyboard wait #R$E3F8. Loops until a key in $30-$3F (digit 0-9) is pressed. Part of the "press key to start" logic on the menu.
 c $E2E8 Paint HUD row from template at $E3A6
@@ -2283,6 +2283,6 @@ b $FFC9
 b $FFCF
 b $FFD9
 b $FFDF Graphics bytes + IM 2 interrupt vector trampoline (runtime-patched)
-D $FFDF Most of this block is end-of-map graphics data. The three bytes at $FFF4-$FFF6 are special: in this pre-init snapshot they still contain uninitialised junk ($10 $10 $10), but the setup code at $8C8C-$8C95 POKEs them with $C3 $C2 $83 ('JP #R$ISR_BEEPER') just before executing 'LD A,$3A; LD I,A; IM 2'. The Spectrum's IM 2 interrupt vector ends up at I*256+$FF = $3AFF in the 48K ROM, whose ROM bytes happen to be $F4 $FF — so each interrupt jumps to $FFF4, which then JPs to the real handler. Classic Spectrum IM 2 trick.
+D $FFDF Most of this block is end-of-map graphics data. The three bytes at $FFF4-$FFF6 are special: in this pre-init snapshot they still contain uninitialised junk ($10 $10 $10), but the setup code at $8C8C-$8C95 POKEs them with $C3 $C2 $83 ('JP #R$83C2') just before executing 'LD A,$3A; LD I,A; IM 2'. The Spectrum's IM 2 interrupt vector ends up at I*256+$FF = $3AFF in the 48K ROM, whose ROM bytes happen to be $F4 $FF — so each interrupt jumps to $FFF4, which then JPs to the real handler. Classic Spectrum IM 2 trick.
 b $FFF9
 b $FFFF
