@@ -8,6 +8,7 @@
 #   make snapshot  # tap2sna.py -> build/cyclone.z80
 #   make ctl-auto  # sna2ctl.py  -> build/cyclone.auto.ctl (machine-generated)
 #   make skool     # sna2skool.py using the hand-curated cyclone.ctl
+#   make verify    # reassemble and compare against the original snapshot
 #   make html      # skool2html.py HTML disassembly under build/html
 #   make clean
 
@@ -19,9 +20,10 @@ SNAP     := $(BUILD)/cyclone.z80
 AUTO_CTL := $(BUILD)/cyclone.auto.ctl
 CTL      := cyclone.ctl
 SKOOL    := $(BUILD)/cyclone.skool
+REASM    := $(BUILD)/cyclone.reassembled.bin
 HTML_DIR := $(BUILD)/html
 
-.PHONY: all tape snapshot ctl-auto skool html clean
+.PHONY: all tape snapshot ctl-auto skool verify html clean
 
 all: skool
 
@@ -48,6 +50,12 @@ skool: $(SKOOL)
 
 $(SKOOL): $(SNAP) $(CTL) | $(BUILD)
 	sna2skool.py --hex -c $(CTL) $(SNAP) > $(SKOOL)
+
+$(REASM): $(SKOOL)
+	skool2bin.py $(SKOOL) $(REASM)
+
+verify: $(REASM) $(SNAP)
+	python3 tools/verify.py $(SNAP) $(REASM)
 
 html: $(SKOOL)
 	skool2html.py -d $(HTML_DIR) $(SKOOL)

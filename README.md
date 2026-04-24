@@ -30,13 +30,95 @@ pip install /tmp/skoolkit
 ## Pipeline
 
 ```sh
-make snapshot   # build/cyclone.z80      (tap2sna.py simulates the SpeedLock loader)
-make ctl-auto   # build/cyclone.auto.ctl (sna2ctl.py — fresh static analysis)
-make skool      # build/cyclone.skool    (sna2skool.py using cyclone.ctl)
-make html       # build/html/            (skool2html.py)
+make snapshot   # build/cyclone.z80              (tap2sna.py simulates the SpeedLock loader)
+make ctl-auto   # build/cyclone.auto.ctl         (sna2ctl.py — fresh static analysis)
+make skool      # build/cyclone.skool            (sna2skool.py using cyclone.ctl)
+make verify     # build/cyclone.reassembled.bin  (skool2bin.py + byte-compare vs snapshot)
+make html       # build/html/                    (skool2html.py)
 ```
 
 `make` with no arguments runs through to `skool`.
+
+## Checking the disassembly is correct
+
+"Correct" has two levels here — *lossless* (all bytes preserved) and
+*semantic* (code is marked as code, data as data, strings as strings).
+
+### 1. Round-trip byte equality (`make verify`)
+
+The cheap, automated check. `skool2bin.py` reassembles `cyclone.skool` into
+raw bytes; `tools/verify.py` compares them against the RAM
+(`$4000–$FFFF`) of `cyclone.z80`:
+
+```
+$ make verify
+...
+OK: 49152 bytes match (build/cyclone.z80 == build/cyclone.reassembled.bin)
+```
+
+A byte-perfect match proves the skool file is a **lossless** representation
+of the snapshot: every directive in `cyclone.ctl` — `b`, `c`, `t`, `s`, `w`
+— round-trips to the same bytes. It's a hard regression check: any edit to
+`cyclone.ctl` that accidentally drops or duplicates bytes will break it.
+
+What it does *not* prove: that we've classified bytes *correctly*. A `c`
+block over pure data still reassembles to the same bytes even though the
+mnemonics are nonsense. For that, see the next two checks.
+
+During `skool2bin.py` you'll also see warnings like:
+
+```
+WARNING: Address $FF07 replaced with 65287 in unsubbed LD operation:
+  65170 FE92   LD HL,$FF07
+```
+
+These fire when an instruction operand points inside a different block, and
+they are informational — the reassembled bytes are still identical. Adding
+an `@ $FF07 label=...` directive (and `@label` on the calling line) makes
+the warning go away and gives the target a proper symbol.
+
+### 2. Sanity-check the skool file
+
+Open `build/cyclone.skool` and scan for tell-tale wrongness:
+
+- **`DEFB` runs full of what look like mnemonics** — a code block has been
+  mis-classified as data. Flip `b` → `c`.
+- **Code blocks that `LD` from themselves or contain long sequences of
+  `NOP`/`RST 0`** — usually a data table being interpreted as instructions.
+  Flip `c` → `b`.
+- **Text blocks (`t`) that emit `DEFM` of unprintable bytes** — flip `t` →
+  `b`.
+- **`WARNING: Instruction at $XXXX overlaps...`** emitted by `sna2skool.py`
+  means a block boundary lands in the middle of a Z80 instruction. Move
+  the boundary or widen the preceding block.
+
+### 3. Run the reassembled game
+
+The strongest semantic check: take `build/cyclone.reassembled.bin`, wrap it
+back into a snapshot with `bin2sna.py`, and boot it in an emulator. If it
+plays identically to the tape, the disassembly is a faithful model of the
+program.
+
+```sh
+bin2sna.py -o 16384 -s 0x5B00 build/cyclone.reassembled.bin build/cyclone.check.z80
+# then load build/cyclone.check.z80 in Fuse / SpecEmu / ZEsarUX
+```
+
+(The `-s` start address is a guess based on the main-loop entry at `$5B00`;
+the real entry is whatever address the SpeedLock loader JP's to once
+decryption finishes — something to nail down as the disassembly progresses.)
+
+### 4. Static analysis cross-check
+
+Regenerate the auto control file and diff against the hand-curated one:
+
+```sh
+make ctl-auto
+diff build/cyclone.auto.ctl cyclone.ctl | less
+```
+
+Places where `sna2ctl.py`'s fresh opinion disagrees with the committed
+`cyclone.ctl` are the most likely places to find a mis-classification.
 
 ## How the control file makes sense of the Z80
 
