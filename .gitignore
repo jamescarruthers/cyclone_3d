@@ -1,0 +1,9 @@
+# SkoolKit build artefacts
+build/
+tzx/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/

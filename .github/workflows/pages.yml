@@ -1,0 +1,64 @@
+name: Deploy SkoolKit HTML to GitHub Pages
+
+# Builds the Cyclone disassembly (tap2sna + sna2skool + skool2html) and
+# publishes build/html/cyclone/ to GitHub Pages.
+#
+# Requires:
+#   - Repository Settings > Pages > Build and deployment > Source set to
+#     "GitHub Actions".
+#   - A push to `main`, or a manual trigger via "Run workflow".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install SkoolKit
+        run: pip install skoolkit
+
+      - name: Build HTML disassembly
+        run: make html
+
+      - name: Verify round-trip byte equality
+        run: make verify
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/html/cyclone
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
