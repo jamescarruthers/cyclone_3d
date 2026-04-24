@@ -164,5 +164,5 @@ def render(snapshot_path: str, out_path: str) -> None:
 
 if __name__ == "__main__":
     snap = sys.argv[1] if len(sys.argv) > 1 else "build/cyclone-endgame.z80"
-    out = sys.argv[2] if len(sys.argv) > 2 else "build/cyclone-world.png"
+    out = sys.argv[2] if len(sys.argv) > 2 else "images/cyclone-world.png"
     render(snap, out)
