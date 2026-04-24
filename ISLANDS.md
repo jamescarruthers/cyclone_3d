@@ -3,6 +3,11 @@
 Cyclone's entire world is 14 fixed locations on a single 256×256 archipelago.
 Missions / levels don't change the geography — only the objectives change.
 
+![Cyclone world silhouette](images/cyclone-world-silhouette.png)
+
+Every island silhouetted from the actual game tile data. `make worldmap`
+rebuilds this and a tile-accurate version at `images/cyclone-world.png`.
+
 The master table lives at `$F230` in the post-load snapshot. Each record is
 20 bytes (`$14`); there are 14 records followed by an `$FF` end-marker at
 `$F348`. The name of each record is looked up in the compressed stream at
