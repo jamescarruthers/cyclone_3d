@@ -190,23 +190,21 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
         HL = shape_base + (helY - IX+$08) * 128 + (helX - IX+$06)
     into the working buffer at $F74E, with HL advancing 128 bytes per row.
 
-    The shape-data column extent is stored per record: rec[+$06] is
-    data_x_min (= x_min + 22) and rec[+$07] is data_x_max (= x_max - 22).
-    As the helicopter sweeps helX from x_min to x_max, the 23-col LDIR
-    window slides across this whole [data_x_min..data_x_max] range, so
-    the union of every column the engine ever reads for THIS island is
-    exactly that range.  Row-wise the engine always reads 29 rows
-    starting at y_origin = rec[+$08], so the natural data extent is
-    [y_origin .. y_origin + 28].
+    rec[+$06] / rec[+$08] are not the top-left corner of the shape data;
+    they are the X/Y values subtracted from the helicopter position before
+    the copy starts.  Because those are x_min + 22 and y_min + 28, the
+    first byte of the shape block (shape_base + 0) corresponds to the
+    world-space top-left cell at (x_min, y_min):
 
-    Earlier iterations either extracted only the 23×29 window at
-    shape_base (which crops islands wider than 23 cols, e.g. KOKOLA at
-    31 cols) or swept the full helicopter rectangle (which on islands
-    whose shape_base regions are densely packed — BANANA $9300,
-    GIANTS GATEWAY $9337, GILLIGANS $9354 — pulls in neighbouring
-    islands' shape data as garbage and forced a "closest-centre" mask).
-    Using the per-record data_x range and 29 rows from y_origin avoids
-    both: it stays inside this island's data, and captures all of it.
+        rel_x = helX - (x_min + 22) + screen_col = world_x - x_min
+        rel_y = helY - (y_min + 28) + screen_row = world_y - y_min
+
+    So the union of every 23×29 window the engine can ever read for an
+    island is the full world-bounds rectangle [x_min..x_max] ×
+    [y_min..y_max], starting exactly at shape_base.  Extracting only
+    [x_origin..x_upper] × [y_origin..y_origin+28] drops the trailing edge
+    of the island, which is why the standalone island renders were cropped
+    on the right.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -214,29 +212,33 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
 
     rec = all_records[rec_idx]
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
+    x_min = rec[0x02]
+    x_max = rec[0x03]
+    y_min = rec[0x04]
+    y_max = rec[0x05]
     x_origin = rec[0x06]
-    data_x_max = rec[0x07]
     y_origin = rec[0x08]
 
-    cols = data_x_max - x_origin + 1
+    cols = x_max - x_min + 1
+    rows = y_max - y_min + 1
 
-    rows = []
-    for r in range(FLIGHT_VIEW_ROWS):
+    tiles = []
+    for r in range(rows):
         row = []
         for c in range(cols):
             addr = (shape_base + r * FLIGHT_VIEW_STRIDE + c) & 0xFFFF
             row.append(get(addr))
-        rows.append(row)
+        tiles.append(row)
 
     return {
-        "world_x_range": [x_origin, data_x_max],
-        "world_y_range": [y_origin, y_origin + FLIGHT_VIEW_ROWS - 1],
+        "world_x_range": [x_min, x_max],
+        "world_y_range": [y_min, y_max],
         "x_origin": x_origin,
         "y_origin": y_origin,
         "view_cols": cols,
-        "view_rows": FLIGHT_VIEW_ROWS,
+        "view_rows": rows,
         "y_stride_bytes": FLIGHT_VIEW_STRIDE,
-        "tiles": rows,
+        "tiles": tiles,
     }
 
 
@@ -394,9 +396,9 @@ def extract(snapshot_path: str) -> dict:
             {"offset": "+0x03", "field": "x_max (world; helicopter max X)"},
             {"offset": "+0x04", "field": "y_min (world; helicopter min Y)"},
             {"offset": "+0x05", "field": "y_max (world; helicopter max Y)"},
-            {"offset": "+0x06", "field": "data_x_min = x_min + 22 (shape data x_min; flight engine subtracts this from helX). The 22-cell gap between world and data X is the half-width of the visible 23-col window — the helicopter can fly that far past the shape data on each side."},
-            {"offset": "+0x07", "field": "data_x_max = x_max - 22"},
-            {"offset": "+0x08", "field": "y_origin = y_min + 28 (flight engine subtracts this from helY; the 28-cell gap is the half-height of the 29-row visible window)"},
+            {"offset": "+0x06", "field": "x_origin = x_min + 22 (flight engine subtracts this from helX before copying a 23-column window; shape_base column 0 therefore maps to world x_min)"},
+            {"offset": "+0x07", "field": "x_upper = x_max - 22 (used by the helicopter-bound checks, not as the right edge of the shape data)"},
+            {"offset": "+0x08", "field": "y_origin = y_min + 28 (flight engine subtracts this from helY before copying a 29-row window; shape_base row 0 therefore maps to world y_min)"},
             {"offset": "+0x09", "field": "y_origin_alt = y_max - 28 (typically equals or matches +0x08)"},
             {"offset": "+0x0A..+0x0B", "field": "shape_base_pointer"},
             {"offset": "+0x0C..+0x0D", "field": "navmap_screen_addr (display-file address where this island's icon is drawn on the navigation-map screen)"},
