@@ -179,33 +179,41 @@ def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -
 
 
 def extract_flight_shape(ram: bytes, rec: bytes) -> dict:
-    """Extract the full 2D flight-shape field for one island.
+    """Extract the 2D flight-shape field for one island.
 
-    The flight projector at $7789 computes the source address for the
-    tile at world (X, Y) as:
+    The flight projector reads the tile for world (X, Y) at:
         HL = shape_base + (Y - IX+$08) * 128 + (X - IX+$06)
 
-    so each Y step crosses 128 bytes and each X step is 1 byte.  The data
-    region spans the island's world-bounds rectangle; values outside are
-    typically zero (sea) or belong to neighbouring islands sharing the
-    same memory page.
+    so each Y step crosses 128 bytes and each X step is 1 byte.
+
+    The world bounds (IX+$02..+$05) describe the region the helicopter can
+    fly across — they're 22 cols wider and 28 rows taller (each side) than
+    the actual data, matching the engine's 23×29 visible window. The real
+    shape data lives in the inner rectangle defined by IX+$06/+$07 (X) and
+    IX+$08/+$09 (Y); reading outside it lands in another island's memory
+    on shared pages (e.g. BANANA, GILLIGANS and GIANTS GATEWAY all live in
+    $9300+ at disjoint inner offsets, so a sweep across BANANA's full
+    77×57 world rect picks up the neighbours' shape bytes as bleed-through).
+    Clipping to [IX+$06, IX+$07] × [IX+$08, IX+$09] gives just this
+    island's terrain.
     """
     def get(addr):
         a = addr & 0xFFFF
         return ram[a - 0x4000] if 0x4000 <= a else 0
 
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
-    sec = rec[0x08]      # IX+$08 = secondary bound (Y origin for shape lookup)
-    x_origin = rec[0x06] # IX+$06 = X origin for shape lookup
-    x_min, x_max = rec[0x02], rec[0x03]
+    x_data_min = rec[0x06]               # IX+$06 = data x_min
+    x_data_max = rec[0x07]               # IX+$07 = data x_max
+    y_origin = rec[0x08]                 # IX+$08 = helicopter-min Y origin
+    x_min, x_max = rec[0x02], rec[0x03]  # full world bounds (helicopter range)
     y_min, y_max = rec[0x04], rec[0x05]
 
     rows = []
     for y in range(y_min, y_max + 1):
-        y_off = (y - sec) & 0xFF      # unsigned 8-bit, may wrap
+        y_off = (y - y_origin) & 0xFF
         row = []
-        for x in range(x_min, x_max + 1):
-            x_off = (x - x_origin) & 0xFF
+        for x in range(x_data_min, x_data_max + 1):
+            x_off = (x - x_data_min) & 0xFF
             addr = (shape_base + y_off * 128 + x_off) & 0xFFFF
             row.append(get(addr))
         rows.append(row)
@@ -213,8 +221,9 @@ def extract_flight_shape(ram: bytes, rec: bytes) -> dict:
     return {
         "world_x_range": [x_min, x_max],
         "world_y_range": [y_min, y_max],
-        "x_origin": x_origin,
-        "y_origin": sec,
+        "data_x_range": [x_data_min, x_data_max],
+        "x_origin": x_data_min,
+        "y_origin": y_origin,
         "y_stride_bytes": 128,
         "tiles": rows,
     }
@@ -367,13 +376,14 @@ def extract(snapshot_path: str) -> dict:
         "record_layout": [
             {"offset": "+0x00", "field": "type"},
             {"offset": "+0x01", "field": "subtype"},
-            {"offset": "+0x02", "field": "x_min"},
-            {"offset": "+0x03", "field": "x_max"},
-            {"offset": "+0x04", "field": "y_min"},
-            {"offset": "+0x05", "field": "y_max"},
-            {"offset": "+0x06", "field": "z_min"},
-            {"offset": "+0x07", "field": "z_max"},
-            {"offset": "+0x08..+0x09", "field": "secondary_bounds"},
+            {"offset": "+0x02", "field": "x_min (world; helicopter min X)"},
+            {"offset": "+0x03", "field": "x_max (world; helicopter max X)"},
+            {"offset": "+0x04", "field": "y_min (world; helicopter min Y)"},
+            {"offset": "+0x05", "field": "y_max (world; helicopter max Y)"},
+            {"offset": "+0x06", "field": "data_x_min = x_min + 22 (shape data x_min; flight engine subtracts this from helX). The 22-cell gap between world and data X is the half-width of the visible 23-col window — the helicopter can fly that far past the shape data on each side."},
+            {"offset": "+0x07", "field": "data_x_max = x_max - 22"},
+            {"offset": "+0x08", "field": "y_origin = y_min + 28 (flight engine subtracts this from helY; the 28-cell gap is the half-height of the 29-row visible window)"},
+            {"offset": "+0x09", "field": "y_origin_alt = y_max - 28 (typically equals or matches +0x08)"},
             {"offset": "+0x0A..+0x0B", "field": "shape_base_pointer"},
             {"offset": "+0x0C..+0x0D", "field": "navmap_screen_addr (display-file address where this island's icon is drawn on the navigation-map screen)"},
             {"offset": "+0x0E", "field": "navmap_sprite_width (columns for $8D5D inner loop)"},

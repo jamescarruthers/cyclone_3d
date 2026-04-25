@@ -73,7 +73,11 @@ def render(json_path: str, scale: int, out_path: str) -> None:
     for isl in islands:
         fs = isl["flight_shape"]
         rows = fs["tiles"]
-        x_origin = fs["world_x_range"][0]
+        # tiles spans data_x_range × world_y_range — the inner data X
+        # extent (margins clipped to avoid bleed-through with neighbouring
+        # islands sharing the same memory page) and the full world Y
+        # range (helicopter approach length).
+        x_origin = fs.get("data_x_range", fs["world_x_range"])[0]
         y_origin = fs["world_y_range"][0]
 
         for y, row in enumerate(rows):

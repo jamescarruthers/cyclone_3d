@@ -101,7 +101,9 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
     title = f"{island_name}  —  rendered from cyclone-map.json"
     draw.rectangle([0, 0, img.width - 1, 28], fill=(0, 0, 0))
     draw.text((8, 6), title, fill=(255, 255, 255))
+    dxr = fs.get("data_x_range", fs["world_x_range"])
     info = (f"flight_shape  {W}x{H} tiles  "
+            f"data x={dxr[0]}-{dxr[1]}  "
             f"world (x={fs['world_x_range'][0]}-{fs['world_x_range'][1]}, "
             f"y={fs['world_y_range'][0]}-{fs['world_y_range'][1]})")
     draw.text((8, img.height - 18), info, fill=(255, 255, 255),
