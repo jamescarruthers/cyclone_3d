@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Render a single island top-down from the flight-shape data in JSON.
+"""Render one or all islands top-down from the flight-shape data in JSON.
 
-Reads build/cyclone-map.json and renders the named island by:
+Reads build/cyclone-map.json and renders each requested island by:
   - For each (Y, X) tile in the island's flight_shape, look up the
     8x8 glyph bitmap at $FA00 + index*8.
   - Apply the attribute byte at $FE00 + index for ink/paper colours.
@@ -14,8 +14,8 @@ where it would appear.
 
 Usage:
     python3 tools/render_island_from_json.py [ISLAND_NAME] [SCALE]
-        ISLAND_NAME defaults to BANANA ISLAND
-        SCALE defaults to 4 (each glyph pixel becomes SCALExSCALE)
+        ISLAND_NAME  island to render, or omit to render all 14 islands
+        SCALE        defaults to 4 (each glyph pixel becomes SCALExSCALE)
 """
 import json
 import sys
@@ -112,8 +112,17 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
 
 
 if __name__ == "__main__":
-    name = sys.argv[1] if len(sys.argv) > 1 else "BANANA ISLAND"
+    json_path = "build/cyclone-map.json"
     scale = int(sys.argv[2]) if len(sys.argv) > 2 else 4
-    out = f"images/island-{name.replace(' ', '_').lower()}.png"
-    Path(out).parent.mkdir(parents=True, exist_ok=True)
-    render("build/cyclone-map.json", name, scale, out)
+
+    if len(sys.argv) > 1:
+        names = [sys.argv[1]]
+    else:
+        # No island name given — render all islands listed in the JSON.
+        data = json.loads(Path(json_path).read_text())
+        names = [isl["name"] for isl in data["islands"]]
+
+    Path("images").mkdir(parents=True, exist_ok=True)
+    for name in names:
+        out = f"images/island-{name.replace(' ', '_').lower()}.png"
+        render(json_path, name, scale, out)

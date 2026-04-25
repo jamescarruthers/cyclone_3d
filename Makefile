@@ -28,7 +28,7 @@ SKOOL      := $(BUILD)/cyclone.skool
 REASM      := $(BUILD)/cyclone.reassembled.bin
 HTML_DIR   := $(BUILD)/html
 
-.PHONY: all tape snapshot ctl-auto map ctl-rzx skool verify mapdata html clean
+.PHONY: all tape snapshot ctl-auto map ctl-rzx skool verify mapdata islands html clean
 
 all: skool
 
@@ -116,6 +116,30 @@ mapdata: $(BUILD)/cyclone-map.json
 
 $(BUILD)/cyclone-map.json: $(BUILD)/cyclone-endgame.z80 tools/extract_map.py
 	python3 tools/extract_map.py $(BUILD)/cyclone-endgame.z80 $(BUILD)/cyclone-map.json
+
+# Render a top-down PNG for each of the 14 islands using the data extracted
+# by extract_map.py.  Running with no island argument renders all of them.
+ISLAND_PNGS := \
+	images/island-banana_island.png \
+	images/island-forte_rocks.png \
+	images/island-kokola_island.png \
+	images/island-lagoon_island.png \
+	images/island-peak_island.png \
+	images/island-base_island.png \
+	images/island-gilligans_island.png \
+	images/island-red_island.png \
+	images/island-skeg_island.png \
+	images/island-bone_island.png \
+	images/island-giants_gateway.png \
+	images/island-claw_island.png \
+	images/island-lukeland_isles.png \
+	images/island-enterprise_island.png
+
+islands: $(ISLAND_PNGS)
+
+$(ISLAND_PNGS): $(BUILD)/cyclone-map.json tools/render_island_from_json.py
+	mkdir -p images
+	python3 tools/render_island_from_json.py
 
 ctl-rzx: $(AUTO_RZX)
 
