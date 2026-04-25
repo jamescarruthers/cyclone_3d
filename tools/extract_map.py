@@ -333,6 +333,23 @@ def extract(snapshot_path: str) -> dict:
     # if rendered_tile < $80 (else solid attribute fill).
     tile_lookup = list(at(TILE_LOOKUP, TILE_LOOKUP_LEN))
 
+    # Vertical-stack lookup tables at $6300, $6400, $6500, ... up to $FE00.
+    # #R$7E10's second loop walks upward in screen space, looking up each
+    # shape byte at successive pages: $6300+S becomes the bottom cell,
+    # $6400+S the cell one row above, and so on.  $FF terminates the
+    # stack; $FE means "skip this row but keep going".  This is how the
+    # engine produces the 3D appearance of cliffs and peaks: a single
+    # shape byte expands into a tall column.
+    tile_stacks = []
+    for s in range(256):
+        stack = []
+        for page in range(0x63, 0xFE):
+            v = at((page << 8) | s, 1)[0]
+            if v == 0xFF:
+                break
+            stack.append({"tile": v, "skip": v == 0xFE})
+        tile_stacks.append(stack)
+
     return {
         "source": snapshot_path,
         "game": "Cyclone (Vortex Software, 1985)",
@@ -379,6 +396,7 @@ def extract(snapshot_path: str) -> dict:
         "glyph_categories": glyph_categories,
         "tile_attributes": attributes,
         "tile_lookup": tile_lookup,
+        "tile_stacks": tile_stacks,
         "render_pipeline": {
             "step_1": "shape_data → $F74E (LDIR copies 23 bytes/row * N rows from shape_base, with 128-byte Y stride)",
             "step_2": "$7E10: $F74E[i] = tile_lookup[$F74E[i]]  — translates shape bytes via the 256-byte table at $6300",

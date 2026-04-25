@@ -51,32 +51,55 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
     rows = fs["tiles"]
     H, W = len(rows), len(rows[0])
 
-    img = Image.new("RGB", (W * 8 * scale, H * 8 * scale), (0, 0, 0))
+    # The render pipeline: each shape byte produces a vertical STACK
+    # of cells via lookups at $6300+S, $6400+S, ...  $7E10 walks upward
+    # in screen space (HL -= 23 per step), so the stack stretches UP
+    # the screen.  $FE in the stack means "skip this row but continue".
+    # That's how cliffs and peaks appear: a single shape byte expands
+    # into a tall isometric column.
+    tile_stacks = data["tile_stacks"]
 
-    # Reproduce the in-game render pipeline:
-    #   1. shape byte -> $7E10 translates via tile_lookup[$6300]
-    #   2. translated value -> $762C looks up attribute at $FE00+T
-    #   3. if T < $80: draw bitmap at $FA00+T*8; else solid fill
-    tile_lookup = data["tile_lookup"]
+    # Add headroom above the data so tall stacks aren't clipped at the
+    # top.  Use the longest stack length as a safe margin.
+    max_stack = max((len(tile_stacks[v])
+                    for row in rows for v in row), default=1)
+    canvas_H = H * 8 * scale + max_stack * 8 * scale
+    img = Image.new("RGB", (W * 8 * scale, canvas_H), (0, 0, 0))
 
-    for y, row in enumerate(rows):
-        for x, raw in enumerate(row):
-            idx = tile_lookup[raw]
-            ink, paper = attr_colours(attrs[idx])
-            bitmap_bytes = [0] * 8 if idx >= 0x80 else glyphs[idx]
-            for dy, byte in enumerate(bitmap_bytes):
-                for dx in range(8):
-                    px = ink if byte & (0x80 >> dx) else paper
-                    x0 = (x * 8 + dx) * scale
-                    y0 = (y * 8 + dy) * scale
-                    for sy in range(scale):
-                        for sx in range(scale):
-                            img.putpixel((x0 + sx, y0 + sy), px)
+    def draw_cell(idx: int, sx: int, sy: int) -> None:
+        ink, paper = attr_colours(attrs[idx])
+        bitmap_bytes = [0] * 8 if idx >= 0x80 else glyphs[idx]
+        for dy, byte in enumerate(bitmap_bytes):
+            for dx in range(8):
+                px = ink if byte & (0x80 >> dx) else paper
+                x0 = (sx + dx) * scale
+                y0 = (sy + dy) * scale
+                if 0 <= y0 < canvas_H:
+                    for sy_ in range(scale):
+                        for sx_ in range(scale):
+                            img.putpixel((x0 + sx_, y0 + sy_), px)
+
+    # Draw cells back-to-front (top of screen first) so closer cells
+    # overwrite farther ones — same write order as the game engine
+    # ($7E10 walks UP from the base position).
+    for y in range(H):
+        for x, raw in enumerate(rows[y]):
+            stack = tile_stacks[raw]
+            for level, entry in enumerate(stack):
+                if entry["skip"]:
+                    continue
+                idx = entry["tile"]
+                sx = x * 8
+                # Base cell is at y * 8; each stack level moves UP
+                # one row (sy decreases).  Add max_stack offset so
+                # tall stacks fit on the canvas.
+                sy = (y - level) * 8 + max_stack * 8
+                draw_cell(idx, sx, sy)
 
     # Title bar
     draw = ImageDraw.Draw(img)
     title = f"{island_name}  —  rendered from cyclone-map.json"
-    draw.rectangle([0, 0, img.width - 1, 24], fill=(0, 0, 0))
+    draw.rectangle([0, 0, img.width - 1, 28], fill=(0, 0, 0))
     draw.text((8, 6), title, fill=(255, 255, 255))
     info = (f"flight_shape  {W}x{H} tiles  "
             f"world (x={fs['world_x_range'][0]}-{fs['world_x_range'][1]}, "
