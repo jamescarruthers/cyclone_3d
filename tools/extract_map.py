@@ -190,19 +190,23 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
         HL = shape_base + (helY - IX+$08) * 128 + (helX - IX+$06)
     into the working buffer at $F74E, with HL advancing 128 bytes per row.
 
-    With the helicopter parked at the island's origin (helX=IX+$06,
-    helY=IX+$08) HL is exactly shape_base, so the engine reads the
-    canonical 23×29 layout the loader placed there for THIS island.
-    Cell (col c, row r) of the window represents world tile
-    (x_origin + c, y_origin + r).
+    The shape-data column extent is stored per record: rec[+$06] is
+    data_x_min (= x_min + 22) and rec[+$07] is data_x_max (= x_max - 22).
+    As the helicopter sweeps helX from x_min to x_max, the 23-col LDIR
+    window slides across this whole [data_x_min..data_x_max] range, so
+    the union of every column the engine ever reads for THIS island is
+    exactly that range.  Row-wise the engine always reads 29 rows
+    starting at y_origin = rec[+$08], so the natural data extent is
+    [y_origin .. y_origin + 28].
 
-    The earlier approach swept the full helicopter-flight rectangle
-    (e.g. 77×57 for BANANA) and masked foreign-claimed addresses with a
-    geometric "closest-centre" heuristic. The flight engine never reads
-    that rectangle: only this 23×29 window is ever projected, and the
-    sparse non-zero bytes for BANANA, GIANTS GATEWAY and GILLIGANS land
-    at disjoint column ranges within their respective windows, so no
-    masking is needed.
+    Earlier iterations either extracted only the 23×29 window at
+    shape_base (which crops islands wider than 23 cols, e.g. KOKOLA at
+    31 cols) or swept the full helicopter rectangle (which on islands
+    whose shape_base regions are densely packed — BANANA $9300,
+    GIANTS GATEWAY $9337, GILLIGANS $9354 — pulls in neighbouring
+    islands' shape data as garbage and forced a "closest-centre" mask).
+    Using the per-record data_x range and 29 rows from y_origin avoids
+    both: it stays inside this island's data, and captures all of it.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -211,22 +215,25 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
     rec = all_records[rec_idx]
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
     x_origin = rec[0x06]
+    data_x_max = rec[0x07]
     y_origin = rec[0x08]
+
+    cols = data_x_max - x_origin + 1
 
     rows = []
     for r in range(FLIGHT_VIEW_ROWS):
         row = []
-        for c in range(FLIGHT_VIEW_COLS):
+        for c in range(cols):
             addr = (shape_base + r * FLIGHT_VIEW_STRIDE + c) & 0xFFFF
             row.append(get(addr))
         rows.append(row)
 
     return {
-        "world_x_range": [x_origin, x_origin + FLIGHT_VIEW_COLS - 1],
+        "world_x_range": [x_origin, data_x_max],
         "world_y_range": [y_origin, y_origin + FLIGHT_VIEW_ROWS - 1],
         "x_origin": x_origin,
         "y_origin": y_origin,
-        "view_cols": FLIGHT_VIEW_COLS,
+        "view_cols": cols,
         "view_rows": FLIGHT_VIEW_ROWS,
         "y_stride_bytes": FLIGHT_VIEW_STRIDE,
         "tiles": rows,
