@@ -68,6 +68,55 @@ ISLAND_NAMES = [
 ]
 
 
+def categorise_glyph(g: list) -> dict:
+    """Heuristically classify an 8x8 glyph by its bit pattern.
+
+    These categories are rough buckets that help a consumer reason about
+    the glyph's role in the 3D world (cliff face, ground, palm tree, etc.)
+    without manually tagging every glyph.  See `glyph_categories` in the
+    output JSON for the full list of buckets.
+    """
+    if all(b == 0 for b in g):
+        return {"category": "empty",
+                "note": "transparent / sea / sky"}
+
+    pixels = sum(bin(b).count("1") for b in g)
+    rows_with_data = sum(1 for b in g if b)
+    uniform_byte = len(set(g)) == 1
+    # Vertical-stripe patterns (cliff face): every row has the same byte.
+    if uniform_byte and 8 <= pixels <= 56:
+        return {"category": "cliff_face",
+                "note": f"uniform vertical-stripe pattern ({pixels} pixels per row x 8)"}
+
+    if pixels >= 56:
+        return {"category": "solid",
+                "note": "mostly filled — ground / building face"}
+
+    # Detect "pattern" tiles (dithered/checkerboard) — alternating bits
+    # within rows are a strong signal.
+    pattern_score = 0
+    for byte in g:
+        if byte == 0:
+            continue
+        bits = format(byte, "08b")
+        transitions = sum(1 for i in range(7) if bits[i] != bits[i + 1])
+        if transitions >= 4:
+            pattern_score += 1
+    if pattern_score >= 4:
+        return {"category": "pattern",
+                "note": "regular dither / texture pattern"}
+
+    # Coverage-based buckets for the rest.
+    if rows_with_data <= 2 or pixels <= 6:
+        return {"category": "fine_detail",
+                "note": f"sparse small feature ({pixels} pixels)"}
+    if pixels <= 20:
+        return {"category": "medium_feature",
+                "note": f"medium feature: palm / fuel pod / person ({pixels} pixels)"}
+    return {"category": "heavy_feature",
+            "note": f"dense feature: peak / cliff edge / building ({pixels} pixels)"}
+
+
 def decode_attribute(byte: int) -> dict:
     return {
         "value": byte,
@@ -127,6 +176,48 @@ def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -
     return rows
 
 
+def extract_flight_shape(ram: bytes, rec: bytes) -> dict:
+    """Extract the full 2D flight-shape field for one island.
+
+    The flight projector at $7789 computes the source address for the
+    tile at world (X, Y) as:
+        HL = shape_base + (Y - IX+$08) * 128 + (X - IX+$06)
+
+    so each Y step crosses 128 bytes and each X step is 1 byte.  The data
+    region spans the island's world-bounds rectangle; values outside are
+    typically zero (sea) or belong to neighbouring islands sharing the
+    same memory page.
+    """
+    def get(addr):
+        a = addr & 0xFFFF
+        return ram[a - 0x4000] if 0x4000 <= a else 0
+
+    shape_base = rec[0x0A] | (rec[0x0B] << 8)
+    sec = rec[0x08]      # IX+$08 = secondary bound (Y origin for shape lookup)
+    x_origin = rec[0x06] # IX+$06 = X origin for shape lookup
+    x_min, x_max = rec[0x02], rec[0x03]
+    y_min, y_max = rec[0x04], rec[0x05]
+
+    rows = []
+    for y in range(y_min, y_max + 1):
+        y_off = (y - sec) & 0xFF      # unsigned 8-bit, may wrap
+        row = []
+        for x in range(x_min, x_max + 1):
+            x_off = (x - x_origin) & 0xFF
+            addr = (shape_base + y_off * 128 + x_off) & 0xFFFF
+            row.append(get(addr))
+        rows.append(row)
+
+    return {
+        "world_x_range": [x_min, x_max],
+        "world_y_range": [y_min, y_max],
+        "x_origin": x_origin,
+        "y_origin": sec,
+        "y_stride_bytes": 128,
+        "tiles": rows,
+    }
+
+
 def extract(snapshot_path: str) -> dict:
     snap = Snapshot.get(snapshot_path)
     ram = bytes(snap.ram(-1))
@@ -165,6 +256,8 @@ def extract(snapshot_path: str) -> dict:
         navmap_sprite = decode_navmap_sprite(ram, shape_base, navmap_w, navmap_h)
         navmap_sprite_addr = (shape_base + 0x0102) & 0xFFFF
 
+        flight_shape = extract_flight_shape(ram, rec)
+
         islands.append({
             "index": i,
             "name": ISLAND_NAMES[i],
@@ -185,6 +278,7 @@ def extract(snapshot_path: str) -> dict:
                 "height_rows": navmap_h,
                 "bitmap": navmap_sprite,
             },
+            "flight_shape": flight_shape,
             "name_stream_ptr": f"0x{rec[0x10] | (rec[0x11] << 8):04X}",
             "attribute_high_byte": f"0x{attr_high:02X}",
             "raw_record": [f"0x{b:02X}" for b in rec],
@@ -209,12 +303,20 @@ def extract(snapshot_path: str) -> dict:
         else:
             glyph_bytes = [0] * 8
             in_ram = False
+        cat = categorise_glyph(glyph_bytes)
         glyphs.append({
             "index": idx,
             "addr": f"0x{addr:04X}",
             "bytes": glyph_bytes,
             "in_ram": in_ram,
+            **cat,
         })
+
+    # Group glyphs by category so consumers can quickly look up "all
+    # cliff-face tiles", "all empty tiles", etc.
+    glyph_categories = {}
+    for g in glyphs:
+        glyph_categories.setdefault(g["category"], []).append(g["index"])
 
     # Attribute table at $FE00 (256 entries).
     attr_bytes = at(ATTRS, ATTRS_LEN)
@@ -265,6 +367,7 @@ def extract(snapshot_path: str) -> dict:
         },
         "islands": islands,
         "tile_glyphs": glyphs,
+        "glyph_categories": glyph_categories,
         "tile_attributes": attributes,
     }
 
