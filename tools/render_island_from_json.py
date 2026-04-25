@@ -51,16 +51,17 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
     rows = fs["tiles"]
     H, W = len(rows), len(rows[0])
 
-    # 8 native pixels per tile, scaled.
-    SEA = (0, 64, 128)
-    img = Image.new("RGB", (W * 8 * scale, H * 8 * scale), SEA)
+    img = Image.new("RGB", (W * 8 * scale, H * 8 * scale), (0, 0, 0))
 
+    # Exact replication of the $762C renderer: for each tile value L,
+    #   attribute byte = *($FE00 + L)
+    #   if L < $80: draw 8x8 bitmap from $FA00 + L*8
+    #   else:      no bitmap (solid paper fill)
     for y, row in enumerate(rows):
         for x, idx in enumerate(row):
-            if idx == 0:
-                continue
             ink, paper = attr_colours(attrs[idx])
-            for dy, byte in enumerate(glyphs[idx]):
+            bitmap_bytes = [0] * 8 if idx >= 0x80 else glyphs[idx]
+            for dy, byte in enumerate(bitmap_bytes):
                 for dx in range(8):
                     px = ink if byte & (0x80 >> dx) else paper
                     x0 = (x * 8 + dx) * scale
