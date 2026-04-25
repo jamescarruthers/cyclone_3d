@@ -178,31 +178,29 @@ def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -
     return rows
 
 
-FLIGHT_VIEW_COLS = 23   # LDIR copies 23 bytes/row at $7803-$7806
-FLIGHT_VIEW_ROWS = 29   # repeated 29 times by the loop at $7803-$780D
 FLIGHT_VIEW_STRIDE = 128  # HL += 128 between rows ($7808: ADD HL,BC=$0069 + 23 from LDIR)
 
 
 def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
-    """Extract the per-island flight-mode terrain exactly as the engine reads it.
+    """Extract the full per-island flight-mode terrain.
 
-    The LDIR loop at $7803-$780D copies a 23-col × 29-row window from
+    The LDIR loop at $7803-$780D copies a 23-col window from
         HL = shape_base + (helY - IX+$08) * 128 + (helX - IX+$06)
-    into the working buffer at $F74E, with HL advancing 128 bytes per row.
+    into the working buffer at $F74E (one row per loop iteration, with
+    HL advancing 128 bytes per row).
 
-    With the helicopter parked at the island's origin (helX=IX+$06,
-    helY=IX+$08) HL is exactly shape_base, so the engine reads the
-    canonical 23×29 layout the loader placed there for THIS island.
-    Cell (col c, row r) of the window represents world tile
+    The 23-col window is just what the SCREEN shows at one helicopter
+    position. As the helicopter sweeps its full X range [x_origin..x_upper]
+    (= [x_min+22..x_max-22]) and Y range [y_origin..y_alt], the engine
+    reads every byte in the rectangle
+        cols 0..(x_max - x_origin)   = 0..(x_upper - x_origin + 22)
+        rows 0..(y_max - y_origin)   = 0..(y_alt   - y_origin + 28)
+    from shape_base. Cell (col c, row r) represents world tile
     (x_origin + c, y_origin + r).
 
-    The earlier approach swept the full helicopter-flight rectangle
-    (e.g. 77×57 for BANANA) and masked foreign-claimed addresses with a
-    geometric "closest-centre" heuristic. The flight engine never reads
-    that rectangle: only this 23×29 window is ever projected, and the
-    sparse non-zero bytes for BANANA, GIANTS GATEWAY and GILLIGANS land
-    at disjoint column ranges within their respective windows, so no
-    masking is needed.
+    Reading only the helicopter-at-origin 23×29 window misses the bulk of
+    larger islands — KOKOLA fills cols 0..51, ENTERPRISE 50×48, etc. —
+    and clips them on the right/bottom of the rendered PNGs.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -210,24 +208,29 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
 
     rec = all_records[rec_idx]
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
+    x_min, x_max = rec[0x02], rec[0x03]
+    y_max = rec[0x05]
     x_origin = rec[0x06]
     y_origin = rec[0x08]
 
+    cols = x_max - x_origin + 1
+    rows_n = y_max - y_origin + 1
+
     rows = []
-    for r in range(FLIGHT_VIEW_ROWS):
+    for r in range(rows_n):
         row = []
-        for c in range(FLIGHT_VIEW_COLS):
+        for c in range(cols):
             addr = (shape_base + r * FLIGHT_VIEW_STRIDE + c) & 0xFFFF
             row.append(get(addr))
         rows.append(row)
 
     return {
-        "world_x_range": [x_origin, x_origin + FLIGHT_VIEW_COLS - 1],
-        "world_y_range": [y_origin, y_origin + FLIGHT_VIEW_ROWS - 1],
+        "world_x_range": [x_origin, x_max],
+        "world_y_range": [y_origin, y_max],
         "x_origin": x_origin,
         "y_origin": y_origin,
-        "view_cols": FLIGHT_VIEW_COLS,
-        "view_rows": FLIGHT_VIEW_ROWS,
+        "view_cols": cols,
+        "view_rows": rows_n,
         "y_stride_bytes": FLIGHT_VIEW_STRIDE,
         "tiles": rows,
     }
