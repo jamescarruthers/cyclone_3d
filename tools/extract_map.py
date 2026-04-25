@@ -178,56 +178,31 @@ def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -
     return rows
 
 
-def _build_owner_map(all_records: list) -> dict:
-    """Map each in-RAM shape address to the index of the island that owns it.
-
-    Multiple islands' read mappings can reach the same address — they share
-    memory pages — but the byte at that address was placed for ONE island's
-    terrain. We don't know the loader's tie-break, so use a geometric
-    heuristic: the owner is whichever island's claim sits closest to its own
-    world-bounds centre. Real terrain is densest near the island's centre,
-    so the closer claimant is overwhelmingly likely to be the one for which
-    the byte was placed.
-    """
-    owner = {}
-    for idx, rec in enumerate(all_records):
-        sb = rec[0x0A] | (rec[0x0B] << 8)
-        x0, y0 = rec[0x06], rec[0x08]
-        xmin, xmax = rec[0x02], rec[0x03]
-        ymin, ymax = rec[0x04], rec[0x05]
-        xmid = (xmin + xmax) / 2
-        ymid = (ymin + ymax) / 2
-        for y in range(ymin, ymax + 1):
-            yo = (y - y0) & 0xFF
-            base = (sb + yo * 128) & 0xFFFF
-            dy = (y - ymid) ** 2
-            for x in range(xmin, xmax + 1):
-                xo = (x - x0) & 0xFF
-                addr = (base + xo) & 0xFFFF
-                d = (x - xmid) ** 2 + dy
-                prev = owner.get(addr)
-                if prev is None or d < prev[1]:
-                    owner[addr] = (idx, d)
-    return {a: i for a, (i, _) in owner.items()}
+FLIGHT_VIEW_COLS = 23   # LDIR copies 23 bytes/row at $7803-$7806
+FLIGHT_VIEW_ROWS = 29   # repeated 29 times by the loop at $7803-$780D
+FLIGHT_VIEW_STRIDE = 128  # HL += 128 between rows ($7808: ADD HL,BC=$0069 + 23 from LDIR)
 
 
-def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list,
-                         owner_map: dict) -> dict:
-    """Extract the 2D flight-shape field for one island.
+def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
+    """Extract the per-island flight-mode terrain exactly as the engine reads it.
 
-    The flight projector reads the tile for world (X, Y) at:
-        HL = shape_base + (Y - IX+$08) * 128 + (X - IX+$06)
+    The LDIR loop at $7803-$780D copies a 23-col × 29-row window from
+        HL = shape_base + (helY - IX+$08) * 128 + (helX - IX+$06)
+    into the working buffer at $F74E, with HL advancing 128 bytes per row.
 
-    Each Y step crosses 128 bytes; each X step is 1 byte.
+    With the helicopter parked at the island's origin (helX=IX+$06,
+    helY=IX+$08) HL is exactly shape_base, so the engine reads the
+    canonical 23×29 layout the loader placed there for THIS island.
+    Cell (col c, row r) of the window represents world tile
+    (x_origin + c, y_origin + r).
 
-    Many islands share a memory page (BANANA, GILLIGANS and GIANTS GATEWAY
-    all live in $9300+ at disjoint inner offsets), so a naive sweep across
-    one island's full world rectangle reads bytes that ANOTHER island
-    placed for ITS terrain. We mask any cell whose address is owned by a
-    different island per `owner_map` (closest claimant by distance to the
-    island's world-bounds centre wins). Reads that wrap below $9300 get
-    masked too — they land in the Spectrum's display file and would paint
-    screen pixels onto the island.
+    The earlier approach swept the full helicopter-flight rectangle
+    (e.g. 77×57 for BANANA) and masked foreign-claimed addresses with a
+    geometric "closest-centre" heuristic. The flight engine never reads
+    that rectangle: only this 23×29 window is ever projected, and the
+    sparse non-zero bytes for BANANA, GIANTS GATEWAY and GILLIGANS land
+    at disjoint column ranges within their respective windows, so no
+    masking is needed.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -237,30 +212,23 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list,
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
     x_origin = rec[0x06]
     y_origin = rec[0x08]
-    x_min, x_max = rec[0x02], rec[0x03]
-    y_min, y_max = rec[0x04], rec[0x05]
-
-    SHAPE_LO = 0x9300
 
     rows = []
-    for y in range(y_min, y_max + 1):
-        y_off = (y - y_origin) & 0xFF
+    for r in range(FLIGHT_VIEW_ROWS):
         row = []
-        for x in range(x_min, x_max + 1):
-            x_off = (x - x_origin) & 0xFF
-            addr = (shape_base + y_off * 128 + x_off) & 0xFFFF
-            if addr < SHAPE_LO or owner_map.get(addr) != rec_idx:
-                row.append(0)
-            else:
-                row.append(get(addr))
+        for c in range(FLIGHT_VIEW_COLS):
+            addr = (shape_base + r * FLIGHT_VIEW_STRIDE + c) & 0xFFFF
+            row.append(get(addr))
         rows.append(row)
 
     return {
-        "world_x_range": [x_min, x_max],
-        "world_y_range": [y_min, y_max],
+        "world_x_range": [x_origin, x_origin + FLIGHT_VIEW_COLS - 1],
+        "world_y_range": [y_origin, y_origin + FLIGHT_VIEW_ROWS - 1],
         "x_origin": x_origin,
         "y_origin": y_origin,
-        "y_stride_bytes": 128,
+        "view_cols": FLIGHT_VIEW_COLS,
+        "view_rows": FLIGHT_VIEW_ROWS,
+        "y_stride_bytes": FLIGHT_VIEW_STRIDE,
         "tiles": rows,
     }
 
@@ -288,7 +256,6 @@ def extract(snapshot_path: str) -> dict:
 
     all_records = [at(MASTER_TABLE + i * RECORD_SIZE, RECORD_SIZE)
                    for i in range(RECORD_COUNT)]
-    owner_map = _build_owner_map(all_records)
 
     islands = []
     for i in range(RECORD_COUNT):
@@ -307,7 +274,7 @@ def extract(snapshot_path: str) -> dict:
         navmap_sprite = decode_navmap_sprite(ram, shape_base, navmap_w, navmap_h)
         navmap_sprite_addr = (shape_base + 0x0102) & 0xFFFF
 
-        flight_shape = extract_flight_shape(ram, i, all_records, owner_map)
+        flight_shape = extract_flight_shape(ram, i, all_records)
 
         islands.append({
             "index": i,
