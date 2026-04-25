@@ -28,7 +28,7 @@ SKOOL      := $(BUILD)/cyclone.skool
 REASM      := $(BUILD)/cyclone.reassembled.bin
 HTML_DIR   := $(BUILD)/html
 
-.PHONY: all tape snapshot ctl-auto map ctl-rzx skool verify html clean
+.PHONY: all tape snapshot ctl-auto map ctl-rzx skool verify mapdata html clean
 
 all: skool
 
@@ -108,6 +108,14 @@ images/cyclone-world-fromdata.png: $(SNAP) tools/render_world_fromdata.py
 	python3 tools/render_world_fromdata.py $(SNAP) images/cyclone-world-fromdata.png
 
 worldmap: images/cyclone-world-fromdata.png
+
+# Dump the world map as portable data (JSON): 14 island records, per-island
+# 16x16 tile grids, the 8x8 glyph font and 256-entry attribute table.
+# Enough to reconstruct the archipelago in any language without a Z80 emulator.
+mapdata: $(BUILD)/cyclone-map.json
+
+$(BUILD)/cyclone-map.json: $(BUILD)/cyclone-endgame.z80 tools/extract_map.py
+	python3 tools/extract_map.py $(BUILD)/cyclone-endgame.z80 $(BUILD)/cyclone-map.json
 
 ctl-rzx: $(AUTO_RZX)
 
