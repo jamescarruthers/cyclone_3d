@@ -53,12 +53,15 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
 
     img = Image.new("RGB", (W * 8 * scale, H * 8 * scale), (0, 0, 0))
 
-    # Exact replication of the $762C renderer: for each tile value L,
-    #   attribute byte = *($FE00 + L)
-    #   if L < $80: draw 8x8 bitmap from $FA00 + L*8
-    #   else:      no bitmap (solid paper fill)
+    # Reproduce the in-game render pipeline:
+    #   1. shape byte -> $7E10 translates via tile_lookup[$6300]
+    #   2. translated value -> $762C looks up attribute at $FE00+T
+    #   3. if T < $80: draw bitmap at $FA00+T*8; else solid fill
+    tile_lookup = data["tile_lookup"]
+
     for y, row in enumerate(rows):
-        for x, idx in enumerate(row):
+        for x, raw in enumerate(row):
+            idx = tile_lookup[raw]
             ink, paper = attr_colours(attrs[idx])
             bitmap_bytes = [0] * 8 if idx >= 0x80 else glyphs[idx]
             for dy, byte in enumerate(bitmap_bytes):

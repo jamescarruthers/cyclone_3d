@@ -158,6 +158,16 @@ b $62F6
 s $62F8
 b $62F9
 b $62FD
+b $6300 Tile-transform lookup table (256 bytes)
+D $6300 256-byte translation table read by #R$7E10 to rewrite shape bytes in $F74E before #R$762C renders them. Indexed by raw shape byte; value at the index is the rendered tile. Most shape bytes collapse to a small set of "render classes":
+D $6300   * shape 0 -> 128 (solid cyan sky/sea cell — value >= $80 so $762C draws no bitmap, just attribute fill)
+D $6300   * 133 of the 256 entries -> 135 (solid green grass cell)
+D $6300   * 36 entries -> 0   (transparent / no-op)
+D $6300   * 22 entries -> 24  (medium feature)
+D $6300   * 17 entries -> 137 (solid feature)
+D $6300   * 14 entries -> 23  (cliff edge)
+D $6300   * smaller groups for cliff faces, beaches and special tiles.
+D $6300 Without this translation a flight frame would render as a clutter of person/palm-tree/crate sprites (the raw shape bytes index those at $FA00). With it, the engine produces clean top-down terrain with sky, grass, beaches and cliff faces. See `tools/extract_map.py:tile_lookup` and `tools/render_island_from_json.py` for a Python reimplementation.
 b $6314
 b $631A
 b $6334
@@ -434,7 +444,11 @@ D $74D6 The blocks at $7560-$75A7 and $75C8-$75E7 look like two mirrored 72-byte
 b $754E
 b $7550
 c $762C Tile renderer — draw play area from object table
-D $762C Called as the main frame renderer. Walks the object table at $F74E in 8 rows × 23 cols, for each entry reads a character index from $FE00+(IX), writes it to the attribute byte at $5800+offset, then copies 8 bytes of glyph bitmap from $FA00+(idx*8) to the display file. Classic Spectrum attribute-then-pixels character drawing.
+D $762C Final stage of the flight-mode render pipeline. Walks the working buffer at $F74E in three blocks (8+8+6 = 22 character rows × 23 cols of the play area). For each tile value L: reads attr = ($FE00+L), writes attr to the attribute file at $5800+offset; if L < $80, also copies the 8-byte glyph bitmap from $FA00+(L*8) to the display file. If L >= $80 the cell renders as a solid-coloured attribute fill with NO bitmap pattern.
+D $762C This routine is the LAST step. Two earlier stages prepare $F74E:
+D $762C   1. #R$76D2 (input + object scan) clears $F74E and the LDIR loop at $7803-$780D copies 23 bytes/row * 29 rows from the shape data at HL = shape_base + (helY-IX+$08)*128 + (helX-IX+$06).
+D $762C   2. #R$7E10 translates $F74E in place via the 256-byte tile-transform table at $6300, so a raw shape byte S becomes ($6300+S) before $762C reads it. Without this lookup the visual becomes a clutter of person/palm-tree/crate sprites; with it, sky bytes (0,1,...) collapse to value 128 (solid cyan), grass bytes collapse to 135 (solid green), edge/cliff bytes pick up the matching cliff-face glyphs, and the recognisable top-down terrain emerges.
+D $762C Also called by the attract-mode loop at #R$9246 for the same reason. The keyboard/joystick frame dispatch at $5B62-$5B86 only chooses which input handler runs; the rendering pipeline above is unconditional (called from $5B45-$5B57 in MAIN_LOOP).
 s $76C9
 c $76D2 Object-table init + visibility/bounds check
 D $76D2 Clears the object tables at $F74E onwards, then scans incoming object position data in ($7500)-($7503), comparing against the bounds stored in a record pointed to by IX (fields at IX+0..IX+5: type, sub, x-min, x-max, y-min, y-max). Used to decide which enemies/fuel pods to render.

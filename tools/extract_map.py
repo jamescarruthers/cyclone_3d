@@ -40,6 +40,8 @@ END_MARKER_ADDR = 0xF348
 FONT = 0xFA00
 ATTRS = 0xFE00
 ATTRS_LEN = 0x100
+TILE_LOOKUP = 0x6300       # tile-transform table (see #R$7E10)
+TILE_LOOKUP_LEN = 0x100
 
 # Spectrum 8-colour palette (215/255 split for non-bright/bright).
 PALETTE = [
@@ -324,6 +326,13 @@ def extract(snapshot_path: str) -> dict:
         {"index": i, **decode_attribute(b)} for i, b in enumerate(attr_bytes)
     ]
 
+    # Tile-transform lookup at $6300 — used by #R$7E10 to translate raw
+    # shape bytes in $F74E into the values that #R$762C then renders.
+    # Apply: rendered_tile = tile_lookup[shape_byte], then attribute =
+    # attributes[rendered_tile], and bitmap = font[rendered_tile] only
+    # if rendered_tile < $80 (else solid attribute fill).
+    tile_lookup = list(at(TILE_LOOKUP, TILE_LOOKUP_LEN))
+
     return {
         "source": snapshot_path,
         "game": "Cyclone (Vortex Software, 1985)",
@@ -369,6 +378,12 @@ def extract(snapshot_path: str) -> dict:
         "tile_glyphs": glyphs,
         "glyph_categories": glyph_categories,
         "tile_attributes": attributes,
+        "tile_lookup": tile_lookup,
+        "render_pipeline": {
+            "step_1": "shape_data → $F74E (LDIR copies 23 bytes/row * N rows from shape_base, with 128-byte Y stride)",
+            "step_2": "$7E10: $F74E[i] = tile_lookup[$F74E[i]]  — translates shape bytes via the 256-byte table at $6300",
+            "step_3": "$762C: for each translated tile T: write attributes[T] to $5800; if T < 0x80, write font[T] to $4000",
+        },
     }
 
 
