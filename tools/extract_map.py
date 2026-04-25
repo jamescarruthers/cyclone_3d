@@ -178,51 +178,74 @@ def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -
     return rows
 
 
-def extract_flight_shape(ram: bytes, rec: bytes) -> dict:
+def extract_flight_shape(ram: bytes, rec: bytes, all_records: list) -> dict:
     """Extract the 2D flight-shape field for one island.
 
     The flight projector reads the tile for world (X, Y) at:
         HL = shape_base + (Y - IX+$08) * 128 + (X - IX+$06)
 
-    so each Y step crosses 128 bytes and each X step is 1 byte.
+    Each Y step crosses 128 bytes; each X step is 1 byte.
 
-    The world bounds (IX+$02..+$05) describe the region the helicopter can
-    fly across — they're 22 cols wider and 28 rows taller (each side) than
-    the actual data, matching the engine's 23×29 visible window. The real
-    shape data lives in the inner rectangle defined by IX+$06/+$07 (X) and
-    IX+$08/+$09 (Y); reading outside it lands in another island's memory
-    on shared pages (e.g. BANANA, GILLIGANS and GIANTS GATEWAY all live in
-    $9300+ at disjoint inner offsets, so a sweep across BANANA's full
-    77×57 world rect picks up the neighbours' shape bytes as bleed-through).
-    Clipping to [IX+$06, IX+$07] × [IX+$08, IX+$09] gives just this
-    island's terrain.
+    Many islands share a memory page (BANANA, GILLIGANS and GIANTS GATEWAY
+    all live in $9300+ at disjoint inner offsets), so a naive sweep across
+    one island's full world rectangle reads bytes that ANOTHER island
+    placed for ITS terrain. To strip that bleed-through we mask out any
+    cell whose address is also reachable by some (X', Y') inside another
+    island's world bounds — those bytes belong to a neighbour and would
+    show up as fragments of foreign coastlines on this island's render.
     """
     def get(addr):
         a = addr & 0xFFFF
         return ram[a - 0x4000] if 0x4000 <= a else 0
 
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
-    x_data_min = rec[0x06]               # IX+$06 = data x_min
-    x_data_max = rec[0x07]               # IX+$07 = data x_max
-    y_origin = rec[0x08]                 # IX+$08 = helicopter-min Y origin
-    x_min, x_max = rec[0x02], rec[0x03]  # full world bounds (helicopter range)
+    x_origin = rec[0x06]                 # IX+$06: subtracted from helX
+    y_origin = rec[0x08]                 # IX+$08: subtracted from helY
+    x_min, x_max = rec[0x02], rec[0x03]  # world bounds (helicopter range)
     y_min, y_max = rec[0x04], rec[0x05]
+
+    # Build the set of addresses every OTHER island can reach inside its
+    # own world bounds — same formula, applied to the other 13 records.
+    foreign = set()
+    for other in all_records:
+        if other is rec:
+            continue
+        o_base = other[0x0A] | (other[0x0B] << 8)
+        o_x0 = other[0x06]
+        o_y0 = other[0x08]
+        ox_min, ox_max = other[0x02], other[0x03]
+        oy_min, oy_max = other[0x04], other[0x05]
+        for oy in range(oy_min, oy_max + 1):
+            yo = (oy - o_y0) & 0xFF
+            base = (o_base + yo * 128) & 0xFFFF
+            for ox in range(ox_min, ox_max + 1):
+                xo = (ox - o_x0) & 0xFF
+                foreign.add((base + xo) & 0xFFFF)
+
+    # 16-bit addr arithmetic wraps: at the top edge of world Y, y_off=-28
+    # becomes 228 (8-bit unsigned), so $CF80 + 228*128 wraps to $4180 —
+    # inside the Spectrum's display file. Reading those bytes would paint
+    # screen pixels onto the island. Mask any read that lands below the
+    # shape data region's start ($9300).
+    SHAPE_LO = 0x9300
 
     rows = []
     for y in range(y_min, y_max + 1):
         y_off = (y - y_origin) & 0xFF
         row = []
-        for x in range(x_data_min, x_data_max + 1):
-            x_off = (x - x_data_min) & 0xFF
+        for x in range(x_min, x_max + 1):
+            x_off = (x - x_origin) & 0xFF
             addr = (shape_base + y_off * 128 + x_off) & 0xFFFF
-            row.append(get(addr))
+            if addr < SHAPE_LO or addr in foreign:
+                row.append(0)
+            else:
+                row.append(get(addr))
         rows.append(row)
 
     return {
         "world_x_range": [x_min, x_max],
         "world_y_range": [y_min, y_max],
-        "data_x_range": [x_data_min, x_data_max],
-        "x_origin": x_data_min,
+        "x_origin": x_origin,
         "y_origin": y_origin,
         "y_stride_bytes": 128,
         "tiles": rows,
@@ -250,10 +273,13 @@ def extract(snapshot_path: str) -> dict:
             f"got ${at(END_MARKER_ADDR, 1)[0]:02X}."
         )
 
+    all_records = [at(MASTER_TABLE + i * RECORD_SIZE, RECORD_SIZE)
+                   for i in range(RECORD_COUNT)]
+
     islands = []
     for i in range(RECORD_COUNT):
         rec_addr = MASTER_TABLE + i * RECORD_SIZE
-        rec = at(rec_addr, RECORD_SIZE)
+        rec = all_records[i]
         shape_base = rec[0x0A] | (rec[0x0B] << 8)
         display_addr = rec[0x0C] | (rec[0x0D] << 8)
         attr_high = rec[0x12]
@@ -267,7 +293,7 @@ def extract(snapshot_path: str) -> dict:
         navmap_sprite = decode_navmap_sprite(ram, shape_base, navmap_w, navmap_h)
         navmap_sprite_addr = (shape_base + 0x0102) & 0xFFFF
 
-        flight_shape = extract_flight_shape(ram, rec)
+        flight_shape = extract_flight_shape(ram, rec, all_records)
 
         islands.append({
             "index": i,
