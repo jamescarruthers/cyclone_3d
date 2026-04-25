@@ -178,7 +178,41 @@ def decode_navmap_sprite(ram: bytes, shape_base: int, width: int, height: int) -
     return rows
 
 
-def extract_flight_shape(ram: bytes, rec: bytes, all_records: list) -> dict:
+def _build_owner_map(all_records: list) -> dict:
+    """Map each in-RAM shape address to the index of the island that owns it.
+
+    Multiple islands' read mappings can reach the same address — they share
+    memory pages — but the byte at that address was placed for ONE island's
+    terrain. We don't know the loader's tie-break, so use a geometric
+    heuristic: the owner is whichever island's claim sits closest to its own
+    world-bounds centre. Real terrain is densest near the island's centre,
+    so the closer claimant is overwhelmingly likely to be the one for which
+    the byte was placed.
+    """
+    owner = {}
+    for idx, rec in enumerate(all_records):
+        sb = rec[0x0A] | (rec[0x0B] << 8)
+        x0, y0 = rec[0x06], rec[0x08]
+        xmin, xmax = rec[0x02], rec[0x03]
+        ymin, ymax = rec[0x04], rec[0x05]
+        xmid = (xmin + xmax) / 2
+        ymid = (ymin + ymax) / 2
+        for y in range(ymin, ymax + 1):
+            yo = (y - y0) & 0xFF
+            base = (sb + yo * 128) & 0xFFFF
+            dy = (y - ymid) ** 2
+            for x in range(xmin, xmax + 1):
+                xo = (x - x0) & 0xFF
+                addr = (base + xo) & 0xFFFF
+                d = (x - xmid) ** 2 + dy
+                prev = owner.get(addr)
+                if prev is None or d < prev[1]:
+                    owner[addr] = (idx, d)
+    return {a: i for a, (i, _) in owner.items()}
+
+
+def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list,
+                         owner_map: dict) -> dict:
     """Extract the 2D flight-shape field for one island.
 
     The flight projector reads the tile for world (X, Y) at:
@@ -189,44 +223,23 @@ def extract_flight_shape(ram: bytes, rec: bytes, all_records: list) -> dict:
     Many islands share a memory page (BANANA, GILLIGANS and GIANTS GATEWAY
     all live in $9300+ at disjoint inner offsets), so a naive sweep across
     one island's full world rectangle reads bytes that ANOTHER island
-    placed for ITS terrain. To strip that bleed-through we mask out any
-    cell whose address is also reachable by some (X', Y') inside another
-    island's world bounds — those bytes belong to a neighbour and would
-    show up as fragments of foreign coastlines on this island's render.
+    placed for ITS terrain. We mask any cell whose address is owned by a
+    different island per `owner_map` (closest claimant by distance to the
+    island's world-bounds centre wins). Reads that wrap below $9300 get
+    masked too — they land in the Spectrum's display file and would paint
+    screen pixels onto the island.
     """
     def get(addr):
         a = addr & 0xFFFF
         return ram[a - 0x4000] if 0x4000 <= a else 0
 
+    rec = all_records[rec_idx]
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
-    x_origin = rec[0x06]                 # IX+$06: subtracted from helX
-    y_origin = rec[0x08]                 # IX+$08: subtracted from helY
-    x_min, x_max = rec[0x02], rec[0x03]  # world bounds (helicopter range)
+    x_origin = rec[0x06]
+    y_origin = rec[0x08]
+    x_min, x_max = rec[0x02], rec[0x03]
     y_min, y_max = rec[0x04], rec[0x05]
 
-    # Build the set of addresses every OTHER island can reach inside its
-    # own world bounds — same formula, applied to the other 13 records.
-    foreign = set()
-    for other in all_records:
-        if other is rec:
-            continue
-        o_base = other[0x0A] | (other[0x0B] << 8)
-        o_x0 = other[0x06]
-        o_y0 = other[0x08]
-        ox_min, ox_max = other[0x02], other[0x03]
-        oy_min, oy_max = other[0x04], other[0x05]
-        for oy in range(oy_min, oy_max + 1):
-            yo = (oy - o_y0) & 0xFF
-            base = (o_base + yo * 128) & 0xFFFF
-            for ox in range(ox_min, ox_max + 1):
-                xo = (ox - o_x0) & 0xFF
-                foreign.add((base + xo) & 0xFFFF)
-
-    # 16-bit addr arithmetic wraps: at the top edge of world Y, y_off=-28
-    # becomes 228 (8-bit unsigned), so $CF80 + 228*128 wraps to $4180 —
-    # inside the Spectrum's display file. Reading those bytes would paint
-    # screen pixels onto the island. Mask any read that lands below the
-    # shape data region's start ($9300).
     SHAPE_LO = 0x9300
 
     rows = []
@@ -236,7 +249,7 @@ def extract_flight_shape(ram: bytes, rec: bytes, all_records: list) -> dict:
         for x in range(x_min, x_max + 1):
             x_off = (x - x_origin) & 0xFF
             addr = (shape_base + y_off * 128 + x_off) & 0xFFFF
-            if addr < SHAPE_LO or addr in foreign:
+            if addr < SHAPE_LO or owner_map.get(addr) != rec_idx:
                 row.append(0)
             else:
                 row.append(get(addr))
@@ -275,6 +288,7 @@ def extract(snapshot_path: str) -> dict:
 
     all_records = [at(MASTER_TABLE + i * RECORD_SIZE, RECORD_SIZE)
                    for i in range(RECORD_COUNT)]
+    owner_map = _build_owner_map(all_records)
 
     islands = []
     for i in range(RECORD_COUNT):
@@ -293,7 +307,7 @@ def extract(snapshot_path: str) -> dict:
         navmap_sprite = decode_navmap_sprite(ram, shape_base, navmap_w, navmap_h)
         navmap_sprite_addr = (shape_base + 0x0102) & 0xFFFF
 
-        flight_shape = extract_flight_shape(ram, rec, all_records)
+        flight_shape = extract_flight_shape(ram, i, all_records, owner_map)
 
         islands.append({
             "index": i,
