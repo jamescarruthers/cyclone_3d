@@ -2175,10 +2175,10 @@ D $F230   +$02  x_min         world X lower bound
 D $F230   +$03  x_max         world X upper bound
 D $F230   +$04  y_min         world Y lower bound (compared with ($7502) at $770A)
 D $F230   +$05  y_max         world Y upper bound
-D $F230   +$06  data_x_min    shape-data X lower bound (= x_min + 22). The flight engine subtracts this from the helicopter X when computing the read pointer at #R$762C / #R$76D2: HL = shape_base + (helY-IX+$08)*128 + (helX-IX+$06). The 22-cell margin between the world bounds (helicopter range) and the data bounds matches the half-width of the 23-column visible play area, so the helicopter can fly past the island on each side before the next one scrolls into view.
-D $F230   +$07  data_x_max    shape-data X upper bound (= x_max - 22). Mirrors +$06 on the right edge. Sweeping a flight_shape across the FULL world bounds reads bytes whose addresses overlap with neighbouring islands sharing the same memory page (e.g. BANANA, GILLIGANS, GIANTS all in $9300+); the inner [+$06, +$07] window is the actual per-island terrain.
-D $F230   +$08  y_origin      shape-data Y origin (= y_min + 28). Subtracted from helY by the flight engine. The 28-cell margin matches the half-height of the 29-row visible play area.
-D $F230   +$09  y_origin_alt  usually = +$08; a small spread (e.g. GIANTS GATEWAY $40/$52, ENTERPRISE $CC/$DF) biases the projector for asymmetric islands.
+D $F230   +$06  x_origin      X subtrahend used by the flight engine when computing the shape-read pointer: HL = shape_base + (helY-IX+$08)*128 + (helX-IX+$06). Always equals x_min + 22 (= half-width of the 23-column visible play area), so x_off is 0 when the helicopter sits at IX+$06 itself.
+D $F230   +$07  x_upper       Upper X threshold (= x_max - 22); used by the helicopter-bound checks at #R$7728-$7740.
+D $F230   +$08  y_origin      Y subtrahend used in the same address formula above (= y_min + 28, half-height of the 29-row visible play area).
+D $F230   +$09  y_origin_alt  Usually = +$08; a small spread (e.g. GIANTS GATEWAY $40/$52, ENTERPRISE $CC/$DF) biases the projector for asymmetric islands.
 D $F230   +$0A..+$0B          runtime shape-work-buffer pointer (populated by the 3D projector, zero in this pre-init snapshot)
 D $F230   +$0C..+$0D          navmap_screen_addr — display-file address where this island's icon is painted on the navigation-map screen (#R$8D5D pass 1)
 D $F230   +$0E                navmap_sprite_width — column count for #R$8D5D's inner sprite-decode loop

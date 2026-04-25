@@ -85,9 +85,9 @@ The master table lives at `$F230` in the post-load snapshot. Each record is
 | `+$03` | `x_max` — world X upper bound |
 | `+$04` | `y_min` — world Y lower bound |
 | `+$05` | `y_max` — world Y upper bound |
-| `+$06` | `data_x_min` — shape-data X lower bound (= `x_min + 22`). Subtracted from the helicopter X by the flight engine: `HL = shape_base + … + (helX - IX+$06)`. |
-| `+$07` | `data_x_max` — shape-data X upper bound (= `x_max - 22`). The 22-cell gap on each side is the half-width of the engine's 23-column visible play area: world bounds are wider than the island so the helicopter can fly past it before the next island scrolls in. |
-| `+$08..+$09` | `y_origin` — flight engine's Y origin (= `y_min + 28`, equal to `y_max - 28` when the island is exactly 57 rows tall). Subtracted from helicopter Y. The two bytes are usually equal; a few records (GIANTS GATEWAY, ENTERPRISE ISLAND, …) use a small spread to bias the projector. |
+| `+$06` | `x_origin` — subtracted from helicopter X by the flight engine: `HL = shape_base + … + (helX - IX+$06)`. Always equals `x_min + 22` (= half-width of the engine's 23-column visible play area), so when the helicopter is at the left world edge `x_off` is `-22`, and when it sits at `x_origin` itself `x_off` is `0`. |
+| `+$07` | Upper X threshold (= `x_max - 22`); used by helicopter-bound checks at `#R$7728-$7740`. |
+| `+$08..+$09` | `y_origin` — subtracted from helicopter Y (= `y_min + 28`, with `+$09` typically equal to `+$08`; a few records like GIANTS GATEWAY and ENTERPRISE ISLAND use a small spread to bias the projector). |
 | `+$0A..+$0B` | Runtime shape-work-buffer pointer (zero in a pre-init snapshot) |
 | `+$0C..+$0D` | Display-file address for the projected shape |
 | `+$0E..+$0F` | Extra work field |
@@ -97,12 +97,11 @@ The master table lives at `$F230` in the post-load snapshot. Each record is
 
 ## The 14 islands
 
-The `data x` column below is the inner shape-data extent (`+$06`/`+$07` =
-`x_min+22` / `x_max-22`); the wider `x range` (`+$02`/`+$03`) is where the
-helicopter can fly. Earlier docs labelled `+$06`/`+$07` as `z_min`/`z_max`,
-which mistook a tight X bound for an altitude.
+The `x_origin` column is `+$06` (= `x_min + 22`, the helicopter X that
+makes `x_off` zero). Earlier docs labelled `+$06`/`+$07` as `z_min`/`z_max`,
+which mistook the engine's offset constant for an altitude.
 
-|  # | Address | Name              |   x range |   y range |    data x |
+|  # | Address | Name              |   x range |   y range |  x_origin |
 |---:|:--------|:------------------|----------:|----------:|----------:|
 |  0 | `$F230` | BANANA ISLAND     |  92 – 168 | 128 – 184 | 114 – 146 |
 |  1 | `$F244` | FORTE ROCKS       | 136 – 211 |   0 –  57 | 158 – 189 |
