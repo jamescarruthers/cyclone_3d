@@ -190,21 +190,24 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
         HL = shape_base + (helY - IX+$08) * 128 + (helX - IX+$06)
     into the working buffer at $F74E, with HL advancing 128 bytes per row.
 
-    rec[+$06] / rec[+$08] are not the top-left corner of the shape data;
-    they are the X/Y values subtracted from the helicopter position before
-    the copy starts.  Because those are x_min + 22 and y_min + 28, the
-    first byte of the shape block (shape_base + 0) corresponds to the
-    world-space top-left cell at (x_min, y_min):
+    rec[+$06] (x_origin = x_min + 22) and rec[+$08] (y_origin = y_min + 28)
+    are the helicopter-position subtrahends; shape_base + 0 maps to world
+    (x_min, y_min).
 
-        rel_x = helX - (x_min + 22) + screen_col = world_x - x_min
-        rel_y = helY - (y_min + 28) + screen_row = world_y - y_min
+    Column range: the helicopter X is constrained strictly below x_upper
+    (rec[+$07] = x_max - 22), so helX ranges over [x_origin .. x_upper - 1].
+    At helX = x_upper - 1 the 23-col LDIR window ends at shape col
+    (x_upper - 1 - x_origin) + 22 = x_upper - x_min - 1.  The column count
+    is therefore x_upper - x_min.  Using x_max instead reads x_max - x_upper
+    (= 22) extra columns that belong to a neighbouring island's packed shape
+    data (e.g. GILLIGANS is packed exactly x_upper - x_min bytes after
+    GIANTS GATEWAY's shape_base, and ENTERPRISE exactly that many bytes after
+    LUKELAND's).
 
-    So the union of every 23×29 window the engine can ever read for an
-    island is the full world-bounds rectangle [x_min..x_max] ×
-    [y_min..y_max], starting exactly at shape_base.  Extracting only
-    [x_origin..x_upper] × [y_origin..y_origin+28] drops the trailing edge
-    of the island, which is why the standalone island renders were cropped
-    on the right.
+    Row range: the helicopter Y is constrained to [y_origin .. y_max].  At
+    helY = y_max the engine reads shape rows (y_max - y_min - 28) ..
+    (y_max - y_min), so the full row count y_max - y_min + 1 is needed to
+    show the complete island top-to-bottom.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -213,13 +216,16 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
     rec = all_records[rec_idx]
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
     x_min = rec[0x02]
-    x_max = rec[0x03]
     y_min = rec[0x04]
     y_max = rec[0x05]
     x_origin = rec[0x06]
+    x_upper = rec[0x07]   # = x_max - 22; the engine's X upper bound
     y_origin = rec[0x08]
 
-    cols = x_max - x_min + 1
+    # Rightmost column the engine ever reads is x_upper - x_min - 1
+    # (at helX = x_upper - 1, the 23-col window ends at col x_upper - x_origin + 21
+    #  = x_upper - x_min - 22 + 21 = x_upper - x_min - 1).
+    cols = x_upper - x_min
     rows = y_max - y_min + 1
 
     tiles = []
@@ -231,7 +237,7 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
         tiles.append(row)
 
     return {
-        "world_x_range": [x_min, x_max],
+        "world_x_range": [x_min, x_min + cols - 1],
         "world_y_range": [y_min, y_max],
         "x_origin": x_origin,
         "y_origin": y_origin,
