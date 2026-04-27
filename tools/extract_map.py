@@ -186,48 +186,41 @@ FLIGHT_VIEW_STRIDE = 128  # HL += 128 between rows ($7808: ADD HL,BC=$0069 + 23 
 def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
     """Extract the per-island flight-mode terrain exactly as the engine reads it.
 
-    The LDIR loop at $7803-$780D copies a 23-col × 29-row window from
-        HL = shape_base + (helY - IX+$08) * 128 + (helX - IX+$06)
-    into the working buffer at $F74E, with HL advancing 128 bytes per row.
+    The engine has nine render variants — one per (X-quadrant, Y-quadrant)
+    combination — dispatched by the jump table at $78CF based on bits
+    2..5 of register C set in $7728-$7740 from comparisons against
+    rec[+$06] (x_origin) / rec[+$07] (x_upper) / rec[+$08] (y_origin) /
+    rec[+$09] (y_origin_alt = y_max - 28).  Each variant self-modifies
+    the LDIR loop at $7803/$783D to clip the read so the engine NEVER
+    reads past the island's data:
 
-    rec[+$06] (x_origin = x_min + 22) and rec[+$08] (y_origin = y_min + 28)
-    are the helicopter-position subtrahends; shape_base + 0 maps to world
-    (x_min, y_min).
+      * Centre / north / left and combinations that don't touch the
+        south or right edge: A = $1D = 29 rows, BC = $0017 = 23 cols
+        (full 23×29 window).
+      * SOUTH-edge variants (helY >= y_origin_alt = y_max - 28; e.g.
+        $787D): A = y_max - helY + 1.  The row count shrinks linearly
+        as helY approaches y_max, so reads never go past
+        shape row (y_max - y_origin) = y_max - y_min - 28.
+      * RIGHT-edge variants (helX >= x_upper = x_max - 22; e.g. $77D2):
+        BC at $783E is self-modified to x_max - helX + 1 cols.  The col
+        count shrinks as helX approaches x_max, so reads never go past
+        shape col (x_max - x_origin) = x_max - x_min - 22.
 
-    Helicopter bounds (from the disassembly at $76F9-$7715):
-        $76F9 LD A,($7500) ; helX
-        $76FC CP (IX+$02)  ; vs x_min  (rec[+$02])
-        $76FF JR C,fail    ;   helX < x_min → reject
-        $7701 DEC A
-        $7702 CP (IX+$03)  ; vs x_max  (rec[+$03])
-        $7705 JR NC,fail   ;   helX > x_max → reject
-        $7707 LD A,($7502) ; helY
-        $770A CP (IX+$04)  ; vs y_min
-        $770D JR C,fail    ;   helY < y_min → reject
-        $770F DEC A
-        $7710 CP (IX+$05)  ; vs y_max
-        $7713 JR NC,fail   ;   helY > y_max → reject
-    The hard bounds are therefore [x_min, x_max] × [y_min, y_max].  The
-    related test at $7728-$7740 against rec[+$06]/+$07 is NOT a bound
-    check — it sets bits 2..5 of register C to classify which "quadrant"
-    the helicopter is in, then dispatches via the jump table at $78CF.
+    Therefore the engine's worst-case read window is exactly
+        rows [0 .. y_max - y_min - 28]  ->  y_max - y_min - 27 rows
+        cols [0 .. x_max - x_min - 22]  ->  x_max - x_min - 21 cols
+    and any byte outside that rectangle is never touched.  This is the
+    "garbage collection" the original game relies on — Vortex used the
+    south/right self-modifying clamp to keep islands from reading past
+    their own data into a packed neighbour or runtime work-RAM.
 
-    At maximum helX = x_max the 23-byte LDIR window ends at shape column
-        (x_max - x_origin) + 22 = (x_max - x_min - 22) + 22 = x_max - x_min
-    so the data the engine actually reads spans columns 0 .. x_max - x_min,
-    i.e. width = x_max - x_min + 1 = the full world width.  At maximum
-    helY = y_max the bottom LDIR row is y_max - y_min, so rows likewise
-    span 0 .. y_max - y_min (full world height).
-
-    Some islands share a memory page by packing their shape_base pointers
-    inside another island's row-0 region (e.g. GIANTS GATEWAY at $9337
-    sits exactly x_upper(BANANA) - x_min(BANANA) = 22 bytes inside
-    BANANA's row 0).  When BANANA's engine reads its rightmost columns
-    (helX > x_origin + 32) it physically reads bytes that GIANTS GATEWAY
-    also reads as ITS leftmost columns — the same RAM bytes are shared
-    between the two islands' renderings, by design.  We extract the full
-    world rectangle anyway: those bytes are exactly what the player sees
-    when flying over the east edge of the island.
+    Earlier versions of this extractor used either x_upper - x_min cols
+    (off-by-one too narrow — missed the rightmost col x_max - x_min - 22
+    that the RIGHT variant does read at helX = x_max) or x_max - x_min + 1
+    cols (way too wide — read 22 cols of the next packed island and
+    rendered them as bleed on this one).  The same off-by-one applied to
+    rows.  This corrected version matches the engine exactly: no bleed,
+    no garbage tail, no clamping needed at render time.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -243,8 +236,8 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
     x_upper = rec[0x07]
     y_origin = rec[0x08]
 
-    cols = x_max - x_min + 1
-    rows = y_max - y_min + 1
+    cols = x_max - x_min - 21  # = x_upper - x_min + 1
+    rows = y_max - y_min - 27  # = y_max - y_origin + 1
 
     tiles = []
     for r in range(rows):
@@ -255,8 +248,8 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
         tiles.append(row)
 
     return {
-        "world_x_range": [x_min, x_max],
-        "world_y_range": [y_min, y_max],
+        "world_x_range": [x_min, x_min + cols - 1],
+        "world_y_range": [y_min, y_min + rows - 1],
         "x_origin": x_origin,
         "x_upper": x_upper,
         "y_origin": y_origin,
@@ -321,10 +314,13 @@ def extract(snapshot_path: str) -> dict:
         # which is why several records overlap there but not in absolute
         # world space.  See ISLANDS-IDIOTS-GUIDE.md §10 for the derivation.
         cell_x, cell_y = rec[0x00], rec[0x01]
-        gx_min = cell_x * 256 + rec[0x02]
-        gx_max = cell_x * 256 + rec[0x03]
-        gy_min = cell_y * 256 + rec[0x04]
-        gy_max = cell_y * 256 + rec[0x05]
+        # Use the engine's actual readable extent, not rec[+$03]/[+$05]
+        # which are the helicopter bounds (wider than the data — see
+        # extract_flight_shape).
+        gx_min = cell_x * 256 + flight_shape["world_x_range"][0]
+        gx_max = cell_x * 256 + flight_shape["world_x_range"][1]
+        gy_min = cell_y * 256 + flight_shape["world_y_range"][0]
+        gy_max = cell_y * 256 + flight_shape["world_y_range"][1]
 
         islands.append({
             "index": i,

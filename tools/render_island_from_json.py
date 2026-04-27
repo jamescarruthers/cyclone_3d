@@ -35,81 +35,6 @@ def attr_colours(attr_value: int) -> tuple:
     return p[attr_value & 7], p[(attr_value >> 3) & 7]
 
 
-def find_clean_rows(rows: list, calibration_rows: int = 16) -> int:
-    """Some islands' flight_shape extends past the documented shape region
-    ($9300-$CFFF) into runtime work-RAM (BASE, LUKELAND, ENTERPRISE all
-    do this).  Those bytes aren't terrain — they're whatever runtime
-    state happened to be at that address — and they render as garbage.
-
-    Heuristic: an island's terrain uses a fairly stable set of tile byte
-    values.  Calibrate that vocabulary from the first 16 rows.  Walk
-    further; if two consecutive non-empty rows have >30% of their bytes
-    unseen in the vocabulary, we've crossed into alien memory — return
-    the last in-vocab row.  Empty rows (all zeros) are skipped (some
-    islands legitimately store two views with a sea gap between).
-    """
-    if len(rows) <= calibration_rows:
-        return len(rows)
-    vocab = set()
-    for r in rows[:calibration_rows]:
-        vocab.update(r)
-    streak = 0
-    for i, row in enumerate(rows[calibration_rows:], start=calibration_rows):
-        non_zero = [b for b in row if b != 0]
-        if not non_zero:
-            continue
-        alien = sum(1 for b in non_zero if b not in vocab)
-        if alien > len(non_zero) * 0.30:
-            streak += 1
-            if streak >= 2:
-                return i - 1
-        else:
-            streak = 0
-            vocab.update(non_zero)
-    return len(rows)
-
-
-def build_owner_map(islands: list) -> callable:
-    """Return owner(addr) -> island_index | None.
-
-    Several islands share shape pages — BANANA at $9300, GIANTS GATEWAY
-    at $9337 and GILLIGANS at $9354 all overlap; same trick for
-    FORTE/RED, KOKOLA/SKEG, LUKELAND/ENTERPRISE.  When BANANA's engine
-    reads its full 77x57 rectangle it physically reads bytes that
-    "belong" to GIANTS GATEWAY (their primary terrain) too.
-
-    Rule: among all islands whose flight_shape rectangle CONTAINS the
-    byte, pick the one with the largest shape_base (the most-recently
-    packed claim — the byte was placed for THAT island; earlier islands
-    just happen to read through it).
-    """
-    rects = []
-    for idx, isl in enumerate(islands):
-        sb = int(isl["shape_base"], 16)
-        rows = isl["flight_shape"]["tiles"]
-        # Use the clean (non-garbage) row count so trimmed bytes don't
-        # spuriously claim ownership of other islands' bytes.
-        H = find_clean_rows(rows)
-        W = len(rows[0]) if rows else 0
-        rects.append((idx, sb, H, W))
-
-    def owner(addr: int):
-        best = None
-        best_sb = -1
-        for idx, sb, H, W in rects:
-            if not (sb <= addr):
-                continue
-            offset = addr - sb
-            r, c = divmod(offset, 128)
-            if r < H and c < W:
-                if sb > best_sb:
-                    best_sb = sb
-                    best = idx
-        return best
-
-    return owner
-
-
 def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
     data = json.loads(Path(json_path).read_text())
     glyphs = {g["index"]: g["bytes"] for g in data["tile_glyphs"]}
@@ -122,18 +47,8 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
             print(f"  - {i['name']}")
         sys.exit(2)
 
-    my_idx = next(idx for idx, i in enumerate(data["islands"])
-                  if i["name"] == island_name)
-    owner = build_owner_map(data["islands"])
-    sb = int(isl["shape_base"], 16)
-
     fs = isl["flight_shape"]
-    full_rows = fs["tiles"]
-    clean = find_clean_rows(full_rows)
-    if clean < len(full_rows):
-        print(f"  (trimmed {len(full_rows)-clean} garbage rows past valid "
-              f"shape data: {clean}/{len(full_rows)} kept)")
-    rows = full_rows[:clean]
+    rows = fs["tiles"]
     H, W = len(rows), len(rows[0])
 
     # The render pipeline: each shape byte produces a vertical STACK
@@ -166,16 +81,12 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
 
     # Draw cells back-to-front (top of screen first) so closer cells
     # overwrite farther ones — same write order as the game engine
-    # ($7E10 walks UP from the base position).  Skip any cell whose
-    # underlying byte primarily belongs to a packed-shape neighbour
-    # (BANANA/GIANTS/GILLIGANS, FORTE/RED, KOKOLA/SKEG,
-    # LUKELAND/ENTERPRISE) — otherwise the neighbour's terrain bleeds
-    # into this island's east edge.
+    # ($7E10 walks UP from the base position).  No mask needed: the
+    # extractor already trimmed to the engine's exact read window
+    # (cols = x_max - x_min - 21, rows = y_max - y_min - 27), so every
+    # byte in `rows` is one the engine actually reads for this island.
     for y in range(H):
         for x, raw in enumerate(rows[y]):
-            addr = sb + y * 128 + x
-            if owner(addr) != my_idx:
-                continue
             stack = tile_stacks[raw]
             for level, entry in enumerate(stack):
                 if entry["skip"]:

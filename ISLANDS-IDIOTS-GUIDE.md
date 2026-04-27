@@ -169,39 +169,67 @@ you don't need a Z80 emulator at render time.
 
 ---
 
-## 5. The 23 × 29 LDIR window (and why it doesn't matter for offline render)
+## 5. The 23 × 29 LDIR window — and the self-modifying clamp
 
-When you actually play the game, the engine doesn't render the whole
-island at once. Each frame it runs an LDIR loop that copies a
-**23-column × 29-row window** of shape bytes into a working buffer at
-`$F74E`, centred on the helicopter:
+When you play the game, the engine doesn't render the whole island at
+once. Each frame it runs an LDIR loop that copies a window of shape
+bytes into a working buffer at `$F74E`, centred on the helicopter.
+The naive description is "23 columns × 29 rows centred on the
+helicopter":
 
 ```
 HL = shape_base
    + (helY - y_origin) * 128           # which row of shape data
    + (helX - x_origin)                 # which column
-                                       # then LDIR copies 23 bytes,
-                                       # advances HL by 128, repeats 29 times
+                                       # then LDIR 23 bytes per row,
+                                       # advance HL by 128, repeat 29 times
 ```
 
-For our offline PNG render we don't care about the helicopter — we
-just want to see *every* byte the engine could ever read. The union of
-all `helX ∈ [x_min, x_max]` × `helY ∈ [y_min, y_max]` LDIR windows is
-exactly the rectangle:
+But that's *only* what the centre variant does. The engine actually has
+**nine variants**, dispatched by the jump table at `$78CF`, indexed by
+which "quadrant" the helicopter is in (set in `$7728-$7740`):
+
+- bit 2 set: `helX < x_origin` (LEFT)
+- bit 3 set: `helX >= x_upper` (RIGHT)
+- bit 4 set: `helY < y_origin` (NORTH)
+- bit 5 set: `helY >= y_origin_alt = y_max - 28` (SOUTH)
+
+The variants for the SOUTH and RIGHT edges **self-modify the LDIR loop**
+to clip the read so the engine never goes past the island's data:
+
+| Variant | Where | What it does |
+|---|---|---|
+| `$77AD` (centre) | helicopter in middle | `A = $1D` (29 rows), `BC = $0017` (23 cols) — full window |
+| `$787D` (south) | helY ≥ y_max - 28 | **`A = y_max - helY + 1`** — row count shrinks as helY approaches y_max |
+| `$77D2` (right) | helX ≥ x_max - 22 | self-modifies the immediate at `$783E` so **`BC = x_max - helX + 1`** — col count shrinks as helX approaches x_max |
+| `$77B7` (left), `$77E8` (north) | mirror image | clip from the other side using x_min / y_min |
+
+So at maximum helicopter X the engine reads only **one** column (col
+`x_max - x_origin = x_max - x_min - 22`); at maximum helY only **one**
+row (row `y_max - y_origin = y_max - y_min - 28`). The clamps prevent
+the LDIR from *ever* going past those.
+
+The union of all reads across all valid helicopter positions is
+therefore the rectangle:
 
 ```
-shape rows 0 .. (y_max - y_min)
-shape cols 0 .. (x_max - x_min)
+shape rows  0 .. (y_max - y_min - 28)        ->  y_max - y_min - 27 rows
+shape cols  0 .. (x_max - x_min - 22)        ->  x_max - x_min - 21 cols
 ```
 
-→ **`width = x_max - x_min + 1`**, **`height = y_max - y_min + 1`**,
-in world units. That's what the extractor dumps as `flight_shape.tiles`
-in `cyclone-map.json`.
+That's what `extract_map.py` extracts. **Anything outside that
+rectangle is never touched by the engine** — which is how Vortex got
+away with packing GIANTS GATEWAY's `shape_base` `$9337` only 55 bytes
+into BANANA's row 0 (BANANA's clamped col range is 0..54, so it never
+reads `$9337`+, and GIANTS' clamped row range starts at 0 = `$9337`).
+The "garbage collection" that keeps the game looking clean is **the
+self-modifying LDIR length**, not anything we add at render time.
 
-(*This was the bug behind the right-edge cutoff*: a previous fix used
-`cols = x_upper - x_min`, which is `x_max - x_min - 22`, lopping off the
-rightmost 23 columns. It was based on the wrong premise that `x_upper`
-is the helicopter's hard right bound. It isn't — see §2.)
+If your offline render shows bleed-through from a packed neighbour, or
+a wall of repeating buildings/trees at the bottom of an island, your
+extractor is using the wrong cols/rows formula. The right one is
+above; earlier values like `cols = x_upper - x_min` (off by one too
+narrow) and `cols = x_max - x_min + 1` (way too wide) both fail.
 
 ---
 
