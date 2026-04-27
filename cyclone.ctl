@@ -439,43 +439,71 @@ b $74BC
 b $74D1
 b $74D4
 b $74D6 Game state variables (starting bank)
-D $74D6 Roughly 260 bytes of scalar game state plus two parallel 'save state' blocks. Addresses referenced by the code include: ($7500)/($7502) object X/Y, ($7504) control method (0=joystick,1=keys,3=cursor), ($7505) demo flag, ($7515)/($7516) level indices, ($7517) live level state, ($7522) packed input bits (from #R$7FD6), ($7526) menu/input-method bits, ($7527) difficulty, ($7528) pause flag, ($752D) dying flag, ($752E) mode switch, ($7537) three-frame counter (see #R$8B91), ($753B) active level, ($7555) explosion timer, ($7FD5) saved control method.
+D $74D6 Roughly 260 bytes of scalar game state plus two parallel 'save state' blocks. Addresses referenced by the code include: ($7500)/($7501) helicopter X (16-bit, low/high), ($7502)/($7503) helicopter Y (16-bit, low/high), ($7504) control method (0=joystick,1=keys,3=cursor), ($7505) demo flag, ($7515)/($7516) level indices, ($7517) live level state, ($7522) packed input bits (from #R$7FD6), ($7526) menu/input-method bits, ($7527) difficulty, ($7528) pause flag, ($752D) dying flag, ($752E) mode switch, ($7537) three-frame counter (see #R$8B91), ($753B) active level, ($7555) explosion timer, ($7FD5) saved control method.
 D $74D6 The blocks at $7560-$75A7 and $75C8-$75E7 look like two mirrored 72-byte save states (note $75C8 repeats the same $39 $01 $70 $01 header as $7560). Likely one is current, the other is the backed-up initial state used to restart the level.
+D $74D6 Helicopter coords ($7500..$7503): the world is 768x768 = 3x3 cells of 256x256, addressed by 16-bit X/Y. The HIGH byte of each axis names the cell ($7501 = cell_x, $7503 = cell_y), and the LOW byte is the position within that cell. The bound check at #R$76EC..#R$76F4 reads the high bytes against IX+$00 / IX+$01 in the master table at #R$F230 to find which island contains the helicopter, and the low bytes against IX+$02..+$05 to range-check within the cell. The motion update at #R$81A6 reads/writes both bytes of each axis as a 16-bit word using LD HL,(addr) / LD (addr),HL, so when the low byte rolls over the high byte naturally advances and the helicopter moves into a new cell.
 b $754E
 b $7550
-c $762C Tile renderer — draw play area from object table
-D $762C Final stage of the flight-mode render pipeline. Walks the working buffer at $F74E in three blocks (8+8+6 = 22 character rows × 23 cols of the play area). For each tile value L: reads attr = ($FE00+L), writes attr to the attribute file at $5800+offset; if L < $80, also copies the 8-byte glyph bitmap from $FA00+(L*8) to the display file. If L >= $80 the cell renders as a solid-coloured attribute fill with NO bitmap pattern.
-D $762C This routine is the LAST step. Two earlier stages prepare $F74E:
-D $762C   1. #R$76D2 (input + object scan) clears $F74E and the LDIR loop at $7803-$780D copies 23 bytes/row * 29 rows from the shape data at HL = shape_base + (helY-IX+$08)*128 + (helX-IX+$06).
-D $762C   2. #R$7E10 translates $F74E in place via the 256-byte tile-transform table at $6300, so a raw shape byte S becomes ($6300+S) before $762C reads it. Without this lookup the visual becomes a clutter of person/palm-tree/crate sprites; with it, sky bytes (0,1,...) collapse to value 128 (solid cyan), grass bytes collapse to 135 (solid green), edge/cliff bytes pick up the matching cliff-face glyphs, and the recognisable top-down terrain emerges.
+c $762C Tile renderer — paint play area from the translated $F74E mirror onto the screen
+D $762C Final stage of the flight-mode render pipeline. Walks the 22 character rows of the working buffer at $F74E in three blocks (8+8+6 = 22 rows x 23 cols of the play area). For each tile value L it does: attr = ram($FE00 + L), write attr to the attribute file at $5800 + offset; if L < $80, also copy the 8-byte glyph bitmap from $FA00 + (L * 8) to the display file. If L >= $80 the cell renders as a solid-coloured attribute fill with NO bitmap pattern. After each 8-row block the inner E counter is bumped by $09 (= $20 - $17) to skip the right-hand HUD strip and resume on the first column of the next display-row band.
+D $762C This is the LAST step. Three earlier stages prepare $F74E:
+D $762C   1. #R$76D2 zeroes $F74E (so any cells the LDIR doesn't touch render as cyan-paper sea) and walks the 14-record master table at #R$F230. The first record whose cell_x/cell_y high bytes match the helicopter's, and whose x_min..x_max / y_min..y_max contain the low bytes, is selected.
+D $762C   2. #R$7724-$7751 classifies which "quadrant" of that island the helicopter is in (LEFT / RIGHT / NORTH / SOUTH bits) and dispatches via the table at #R$78CF to one of nine self-clipping LDIR variants (#R$77AD / #R$77B7 / #R$77D2 / #R$77E8 / #R$7810 / #R$7854 / #R$787D / #R$788F / #R$78B1). Each variant copies a (clipped) rectangle of shape bytes from HL = shape_base + (helY - y_origin)*128 + (helX - x_origin) into $F74E, with the SOUTH variant ($787D) clamping the row count to (y_max - helY + 1) and the RIGHT variant ($77D2) self-modifying $783E to clamp the col count to (x_max - helX + 1). These clamps prevent reads from spilling into packed-neighbour data or runtime work-RAM.
+D $762C   3. #R$7E10 translates $F74E in place via the 256-byte tile-transform table at $6300, so a raw shape byte S becomes ($6300+S) before $762C reads it. Without this lookup the visual would be a clutter of person/palm-tree/crate sprites; with it, sky bytes (0,1,...) collapse to value 128 (solid cyan), grass bytes collapse to 135 (solid green), edge/cliff bytes pick up the matching cliff-face glyphs, and the recognisable top-down terrain emerges.
 D $762C Also called by the attract-mode loop at #R$9246 for the same reason. The keyboard/joystick frame dispatch at $5B62-$5B86 only chooses which input handler runs; the rendering pipeline above is unconditional (called from $5B45-$5B57 in MAIN_LOOP).
 s $76C9
-c $76D2 Object-table init + visibility/bounds check
-D $76D2 Clears the object tables at $F74E onwards, then scans incoming object position data in ($7500)-($7503), comparing against the bounds stored in a record pointed to by IX (fields at IX+0..IX+5: type, sub, x-min, x-max, y-min, y-max). Used to decide which enemies/fuel pods to render.
-c $7717 Object-list advance (BC=$0014 per record)
-D $7717 Called from #R$76D2 when an object fails the bounds check. Adds $0014 (20 bytes) to advance to the next object record.
-c $7724
-c $7737
-c $774A
-c $775E Object Y-extent check (variant)
-D $775E Same shape as #R$7789 but reads IX+$08/$09 for the Y-extent, compares against ($7502).
-c $7777 Object field read (IX+$0A/$0B as HL)
-D $7777 Reads a 16-bit field from the object record at IX+$0A..IX+$0B into HL and combines it with the global ($7500) x-coordinate. Helper used by the collision/placement routines that follow.
-c $7789 Object Y-bound check
-D $7789 Reads IX+$0A..$0B into BC and IX+$08..$09 as the object's Y-range, compares against ($7502).
-c $77AD Object-table iterator (helper)
-c $77B7 Object-table iterator (helper 2)
-c $77D2 Object-table iterator (helper 3)
-c $77E8 Object bounds + X range check
-D $77E8 Combines #R$7777 with a range compare against IX+$04 and the global ($7502).
-c $7810 Object X-offset compute
-D $7810 Computes (($7500) - IX+$02) + 1; used when mapping world coordinates to screen columns.
-c $7854 Object render helper
-c $787D Object render helper (variant)
-c $788F Object render helper (variant 2)
-c $78B1 Object render helper (variant 3)
-c $78CF Jump table entry -> #R$77AD
-D $78CF Start of a dispatch jump table whose entries are 3-byte JP instructions with variable padding. Likely indexed by an object-type register elsewhere.
+c $76D2 Flight-mode renderer entry — clear work buffer, walk master table, dispatch by quadrant
+D $76D2 Top of the flight-mode pipeline. (1) Zeroes the 23×29-byte working buffer at $F74E (the play area mirror that #R$762C later rasterises). (2) Sets IX = $F230 = top of the 14-record master table. (3) For each record, runs the helicopter bound-check at #R$76E9-$7715: high byte of helX ($7501) must equal IX+$00 (cell_x), high byte of helY ($7503) must equal IX+$01 (cell_y), low byte of helX must be in [IX+$02, IX+$03] = [x_min, x_max], low byte of helY in [IX+$04, IX+$05] = [y_min, y_max]. Records that fail are skipped via #R$7717 (advance IX by $14 = 20 bytes, stop at $FF terminator). The first matching record falls through to the quadrant classifier at #R$7724 which decides which of the nine self-clipping LDIR variants to run.
+D $76D2 KEY POINT: the helicopter position is 16-bit. ($7500) and ($7501) together form helX as a word; ($7502)/($7503) form helY. The high bytes are the (cell_x, cell_y) index into the 3×3 grid of 256×256 cells that makes up the 768×768 world. Master-table fields +$00/+$01 are the cell index of THIS island, NOT a "type/subtype" classifier as earlier disassembly notes suggested.
+c $7717 Master-table advance (BC=$0014 per record, $FF terminator)
+D $7717 Adds $0014 (= 20 bytes = sizeof master record) to IX, then checks IX+$00 against $FF (the end-of-table sentinel at $F348). If not at end, loops back to #R$76E9 to try the next record. Used by every bound-check failure path in #R$76D2.
+c $7724 Quadrant classifier — sets bits 2..5 of C based on helicopter position vs island centre
+D $7724 Once #R$76D2 has matched the helicopter to an island, this routine builds a 4-bit selector in register C that picks one of the nine flight-render variants. The bits are: bit 2 = helX < x_origin (LEFT half), bit 3 = helX >= x_upper (RIGHT half), bit 4 = helY < y_origin (NORTH half), bit 5 = helY >= y_origin_alt = y_max - 28 (SOUTH half). The four region bits combine to nine valid values (centre, four edges, four corners). After classification at #R$7751 the routine adds C to the dispatch base $78CF and JP (HL) — landing in one of the variant entry points ($77AD/$77B7/$77D2/$77E8/$7810/$7854/$787D/$788F/$78B1).
+D $7724 The "+22" / "+28" constants in x_origin/y_origin make the LEFT/RIGHT and NORTH/SOUTH regions the leftmost-22 / rightmost-22 columns and topmost-28 / bottommost-28 rows of the 23×29 visible play area — i.e. the strips where the standard 23×29 LDIR window would extend past the island's data rectangle and need clipping. See the variant docs for the actual clamp formulae.
+c $7737 Quadrant classifier — RIGHT bit branch ($7724 fall-through when helX >= x_origin)
+D $7737 Sub-block of #R$7724. Reached when helX is NOT below x_origin (so bit 2 stays clear). Compares against IX+$07 = x_upper = x_max - 22; if helX >= x_upper, sets bit 3 of C (RIGHT). Falls through to the Y comparison.
+c $774A Quadrant classifier — SOUTH bit branch ($7724 fall-through when helY >= y_origin)
+D $774A Sub-block of #R$7724. Reached when helY is NOT below y_origin (so bit 4 stays clear). Compares against IX+$09 = y_origin_alt = y_max - 28; if helY >= y_origin_alt, sets bit 5 of C (SOUTH). Falls through to the dispatch at #R$7751.
+c $775E Working-buffer Y-clip helper (used by LEFT+NORTH and LEFT+SOUTH variants)
+D $775E Computes a destination pointer into the $F74E play-area mirror, clipping based on (helY - IX+$08) so the LDIR variants at #R$77B7 and #R$788F write into a row that's offset by (helY - y_origin) rows from the top of the buffer. Identical structure to #R$7789 but reads IX+$08/$09 instead of IX+$0A/$0B.
+c $7777 Source-pointer helper: HL = shape_base + (helX - x_origin)
+D $7777 Used by the NORTH and SOUTH-RIGHT variants to fetch a row-0 source pointer (no Y offset). Loads HL = (IX+$0A | IX+$0B<<8) = shape_base, then adds (($7500) - (IX+$06)) = (helX - x_origin), so HL points at column (helX - x_origin) of shape row 0. The variants then advance HL by 128 per LDIR row.
+c $7789 Source-pointer helper: HL = shape_base + (helY - y_origin)*128 + (helX - x_origin)
+D $7789 The "standard" shape-pointer formula. Computes (($7502) - (IX+$08)) = (helY - y_origin) into A, multiplies by 128 (seven ADD HL,HL), adds shape_base, then adds (helX - x_origin). Returns HL pointing at the top-left byte of the 23×29 LDIR window for the centre/SOUTH/RIGHT variants.
+c $77AD Flight render variant 0/8 — CENTRE (helicopter inside the inner safe rectangle)
+D $77AD Selected when C=0 (no quadrant bits set: helicopter is in [x_origin, x_upper) × [y_origin, y_origin_alt)). Calls #R$7789 to set HL to the standard shape pointer, sets DE = $F74E (top of working buffer) and A = $1D = 29, then JR $7803 to run the LDIR loop with no clipping: 23 columns × 29 rows. This is the only variant that uses the unclipped window — every other variant clamps the row count, the column count, or both.
+c $77B7 Flight render variant — LEFT edge (helX < x_origin)
+D $77B7 Selected when only bit 2 of C is set. The 23-col LDIR window would extend past column 0 of the shape data, so this variant clips on the left. Computes the safe column count B = (helX - x_min + 1), self-modifies #R$783D's column-count immediate at $783E to that value, sets DE = $F74D + (24 - B) so the writes land flush-right inside each working-buffer row (left edge stays zero), calls #R$775E to compute the source HL = shape_base + (helY - y_origin)*128 + 0, and runs the LDIR loop with A = $1D = 29 rows. Result: B columns × 29 rows starting at shape col 0, written into the right-aligned portion of $F74E. The unwritten left strip of $F74E renders as cyan paper (sea) because the buffer was zeroed at #R$76D2 entry.
+c $77D2 Flight render variant — RIGHT edge (helX >= x_upper)
+D $77D2 Selected when only bit 3 of C is set. The 23-col LDIR window would extend past the island's east edge into another packed island's data (or runtime RAM), so this variant clips on the right. Computes the safe column count A = (x_max - helX + 1), self-modifies the LD BC,$0017 instruction at #R$783D by writing A into ($783E) — the LOW byte of BC — so the LDIR copies only that many columns per row. Calls #R$7789 for the standard HL = shape_base + (helY - y_origin)*128 + (helX - x_origin), DE = $F74E, A = $1D = 29 rows, JR $783D. The clamp guarantees the engine never reads past shape col (x_max - x_origin) = (x_max - x_min - 22). This is the LDIR-self-modification that makes shape-page packing safe — see the master-table notes at $F230 for the geometry.
+c $77E8 Flight render variant — NORTH edge (helY < y_origin)
+D $77E8 Selected when only bit 4 of C is set. The 29-row LDIR window would extend above row 0 of the shape data, so this variant clips on the top. Calls #R$7777 to set HL = shape_base + (helX - x_origin) (i.e. row-0 source). Computes the safe row count A = B = (helY - y_min + 1), then steps DE backwards from $F9E9 by B*23 bytes via the SBC HL,DE / DJNZ loop at $77FB so the writes land flush-bottom inside the working buffer (top strip stays zero = sea). Falls into #R$7803 LDIR loop with A clipped rows. Result: 23 cols × A rows starting at shape row 0.
+c $7803 LDIR loop — fixed 23 cols, A rows, source stride 128
+D $7803 The classic LDIR-and-stride loop used by the unclipped CENTRE variant (#R$77AD), the SOUTH variant (#R$787D) and the NORTH variant (#R$77E8). Per iteration: copies BC=$0017 (23) bytes from (HL) to (DE), advances HL by $69+$17 = $80 (128) bytes for the next source row (so the next read is one shape-grid row south, with column unchanged), and DE by 23 (next mirror row). DEC A; JR NZ ends the loop after A rows. The variants set A to the clamped row count: 29 for centre/right/left, (y_max - helY + 1) for south, (helY - y_min + 1) for north.
+c $783D LDIR loop variant — SELF-MODIFIED column count, source stride 128
+D $783D Used by every variant that needs to clip the column count (LEFT, RIGHT, and all four corner combinations). The "LD BC,$0017" instruction at $783D has its low byte ($17 = 23) overwritten beforehand by the variant via "LD ($783E),A" — turning the LDIR into a clipped column copy. Per iteration: PUSH HL/DE, LDIR (BC bytes copied, HL/DE advance by BC), POP DE/HL (restore to row start), advance HL by $80 (128, source stride), DE by $17 (23, mirror stride), DEC A, JR NZ. The reason for the PUSH/POP is so the source/dest row-step is exactly 128/23 regardless of how many bytes BC consumed.
+c $7810 Flight render variant — LEFT+NORTH corner
+D $7810 Selected when bits 2 AND 4 are set (top-left corner of the island). Computes safe column count A = (helX - x_min + 1), self-modifies $783E with it. Computes the screen offset (24 - A) into HL via $F9E8 + (24 - A), then computes safe row count B = (helY - y_min + 1) and uses the SBC HL,DE / DJNZ stepper to walk DE up the buffer by B*23 bytes (so the LDIR writes land flush-bottom-right). HL is then reloaded with shape_base = (IX+$0A | IX+$0B<<8) — i.e. shape-data origin, no row or column offset. Falls into #R$783D with A as the column count and (helY - y_min + 1) as the row count, copying that rectangle starting at shape row 0, col 0.
+c $7854 Flight render variant — RIGHT+NORTH corner
+D $7854 Selected when bits 3 AND 4 are set (top-right corner of the island). Computes safe column count A = (x_max - helX + 1), self-modifies $783E with it. Computes safe row count B = (helY - y_min + 1) and walks DE backward from $F9E9 by B*23 bytes. Calls #R$7777 to compute HL = shape_base + (helX - x_origin) — i.e. row-0 source at the helicopter's column offset. Falls into #R$783D with A columns × B rows starting at shape row 0, col (helX - x_origin).
+c $787D Flight render variant — SOUTH edge (helY >= y_origin_alt)
+D $787D Selected when only bit 5 of C is set. The 29-row LDIR window would extend below row (y_max - y_origin) of the shape data — i.e. into a packed neighbour or runtime work-RAM — so this variant clips on the bottom. Calls #R$7789 for the standard HL = shape_base + (helY - y_origin)*128 + (helX - x_origin), sets DE = $F74E, then computes A = (y_max - helY + 1) and JP $7803. The clamp guarantees the engine never reads past shape row (y_max - y_origin) = (y_max - y_min - 28). Together with #R$77D2's column clamp this is what keeps the rendered playfield free of packed-neighbour bleed.
+c $788F Flight render variant — LEFT+SOUTH corner
+D $788F Selected when bits 2 AND 5 are set (bottom-left corner). Computes safe column count A = (helX - x_min + 1), self-modifies $783E. Computes screen offset (24 - A) into DE = $F74D + (24 - A) so writes land flush-right. Calls #R$775E to set HL = shape_base + (helY - y_origin)*128 + 0 (col 0). Computes safe row count A = (y_max - helY + 1) and falls into #R$783D, copying a clipped rectangle starting at shape row (helY - y_origin), col 0.
+c $78B1 Flight render variant — RIGHT+SOUTH corner
+D $78B1 Selected when bits 3 AND 5 are set (bottom-right corner). Computes safe column count A = (x_max - helX + 1), self-modifies $783E. Calls #R$7789 for HL = shape_base + (helY - y_origin)*128 + (helX - x_origin), DE = $F74E. Computes safe row count A = (y_max - helY + 1) and falls into #R$783D, copying the small clipped rectangle in the bottom-right corner of the shape data.
+c $78CF Flight-render dispatch table — JP nnnn entries indexed by quadrant bits 2..5 of C
+D $78CF Nine 3-byte JP entries with 1- or 5-byte gaps padding the unused C-value slots.  The dispatcher at $7759 does HL=$78CF, ADD HL,BC, JP (HL), where C holds the quadrant bits set in #R$7724-$774A. The valid C values, their meanings and target variants are:
+D $78CF   C = $00 (centre)              -> $78CF -> #R$77AD  (full 29x23, no clip)
+D $78CF   C = $04 (LEFT only)           -> $78D3 -> #R$77B7  (col-clip from left)
+D $78CF   C = $08 (RIGHT only)          -> $78D7 -> #R$77D2  (col-clip from right)
+D $78CF   C = $10 (NORTH only)          -> $78DF -> #R$77E8  (row-clip from top)
+D $78CF   C = $14 (LEFT+NORTH corner)   -> $78E3 -> #R$7810  (both clips)
+D $78CF   C = $18 (RIGHT+NORTH corner)  -> $78E7 -> #R$7854  (both clips)
+D $78CF   C = $20 (SOUTH only)          -> $78EF -> #R$787D  (row-clip from bottom)
+D $78CF   C = $24 (LEFT+SOUTH corner)   -> $78F3 -> #R$788F  (both clips)
+D $78CF   C = $28 (RIGHT+SOUTH corner)  -> $78F7 -> #R$78B1  (both clips)
+D $78CF Other C values (e.g. $0C = LEFT+RIGHT, $30 = NORTH+SOUTH) are impossible because x_origin <= x_upper and y_origin <= y_origin_alt always hold, so a single helicopter coordinate can't be both LEFT and RIGHT (or NORTH and SOUTH). The padding bytes ($78D2, $78D6, $78DA-$78DE, $78E2, $78E6, $78EA-$78EE, $78F2, $78F6) sit in those impossible slots. The "earlier disassembly notes called this an object-class dispatch indexed by an object-type register" comment is incorrect — the table is the flight-render variant selector and the index is the helicopter-quadrant bits.
 s $78D2
 c $78D3 Jump table entry -> #R$77B7
 s $78D6
@@ -2169,16 +2197,16 @@ b $F217
 b $F21A
 b $F230 Island master table — 14 locations on the shared world map
 D $F230 The 20-byte-per-record table that defines every named island in Cyclone. Decoded structure (offsets from the record start, matched to the reads in #R$76D2 / #R$7777 / #R$8D5D / #R$8DEB):
-D $F230   +$00  type byte     (values $00/$01/$02 — graphic/category)
-D $F230   +$01  sub-type      (values $00/$01/$02)
-D $F230   +$02  x_min         world X lower bound
-D $F230   +$03  x_max         world X upper bound
-D $F230   +$04  y_min         world Y lower bound (compared with ($7502) at $770A)
-D $F230   +$05  y_max         world Y upper bound
-D $F230   +$06  x_origin      X subtrahend used by the flight engine when computing the shape-read pointer: HL = shape_base + (helY-IX+$08)*128 + (helX-IX+$06). Always equals x_min + 22 (= half-width of the 23-column visible play area), so x_off is 0 when the helicopter sits at IX+$06 itself.
-D $F230   +$07  x_upper       Upper X threshold (= x_max - 22); used by the helicopter-bound checks at #R$7728-$7740.
-D $F230   +$08  y_origin      Y subtrahend used in the same address formula above (= y_min + 28, half-height of the 29-row visible play area).
-D $F230   +$09  y_origin_alt  Usually = +$08; a small spread (e.g. GIANTS GATEWAY $40/$52, ENTERPRISE $CC/$DF) biases the projector for asymmetric islands.
+D $F230   +$00  cell_x        High byte of helicopter X — i.e. WHICH 256-wide column of the 768x768 world this island lives in. The bound check at #R$76EC compares this directly against ($7501) (helX high byte). Earlier docs labelled this "type"; that's wrong — it's a coordinate, not a classifier. Values $00/$01/$02 across the 14 records.
+D $F230   +$01  cell_y        High byte of helicopter Y — same as +$00 but for Y, compared against ($7503) at #R$76F4. Together (+$00, +$01) name the 256x256 cell that contains this island, and (+$02..+$05) give its position within that cell.
+D $F230   +$02  x_min         Low byte of westernmost helicopter X over this island. Compared with ($7500) at #R$76FC; helX < x_min -> record skipped.
+D $F230   +$03  x_max         Low byte of easternmost helicopter X. Compared (after DEC A) at #R$7702; helX > x_max -> record skipped. Combined with +$00, the island's GLOBAL world X range is [+$00*256+x_min, +$00*256+x_max].
+D $F230   +$04  y_min         Low byte of northernmost helicopter Y. Compared at #R$770A.
+D $F230   +$05  y_max         Low byte of southernmost helicopter Y. Compared at #R$7710.
+D $F230   +$06  x_origin      X subtrahend the flight engine uses for the shape-read pointer: HL = shape_base + (helY-IX+$08)*128 + (helX-IX+$06). Always = x_min + 22, so shape col 0 corresponds to world x_min and the helicopter sits in the middle of the 23-col visible play area when helX = x_origin. Also used by #R$7728-$7740 as the LEFT/CENTRE quadrant boundary.
+D $F230   +$07  x_upper       RIGHT-quadrant boundary used by #R$7737. Always = x_max - 22; when helX >= x_upper the engine picks a right-clipped LDIR variant (#R$77D2 / #R$7854 / #R$78B1) that self-modifies $783E to copy only (x_max - helX + 1) columns per row, preventing the read from extending past col (x_max - x_origin) = (x_max - x_min - 22) into a packed neighbour's data.
+D $F230   +$08  y_origin      Y subtrahend in the address formula above. Always = y_min + 28. Doubles as the NORTH/CENTRE quadrant boundary at #R$773E.
+D $F230   +$09  y_origin_alt  SOUTH-quadrant boundary used by #R$774A. Always = y_max - 28; when helY >= y_origin_alt the engine picks a south-clipped LDIR variant (#R$787D / #R$788F / #R$78B1) that sets the row count to (y_max - helY + 1), preventing the read from extending past row (y_max - y_origin) = (y_max - y_min - 28).
 D $F230   +$0A..+$0B          runtime shape-work-buffer pointer (populated by the 3D projector, zero in this pre-init snapshot)
 D $F230   +$0C..+$0D          navmap_screen_addr — display-file address where this island's icon is painted on the navigation-map screen (#R$8D5D pass 1)
 D $F230   +$0E                navmap_sprite_width — column count for #R$8D5D's inner sprite-decode loop
@@ -2188,6 +2216,12 @@ D $F230   +$12                attribute-file HIGH byte for the paint target
 D $F230   +$13                $00 — record terminator byte
 D $F230 The 14 records map 1:1 to the 14 named locations in the name stream at #R$6A50 (BANANA ISLAND, FORTE ROCKS, KOKOLA ISLAND, LAGOON ISLAND, PEAK ISLAND, BASE ISLAND, GILLIGANS ISLAND, RED ISLAND, SKEG ISLAND, BONE ISLAND, GIANTS GATEWAY, CLAW ISLAND, LUKELAND ISLES, ENTERPRISE ISLAND). Each name is either $FD-terminated (renderer appends ' ISLAND') or $FE-terminated (rendered as-is).
 D $F230 An $FF byte at $F348 marks the end of the table — #R$8D5D bails when IX+$00 = $FF.
+D $F230 World layout: the 14 islands sit in a 3x3 grid of 256x256 cells = a 768x768 world. The cell index for each island is given by (+$00, +$01); within that cell the island lives at the local rectangle (+$02..+$03, +$04..+$05). In the shipped game eight of the nine cells are inhabited (cells (0,0)..(2,1)); cell (2,2) is empty. Two example mappings: BANANA ISLAND has +$00=$02, +$01=$01, x=92..168, y=128..184 -> global X 604..680, Y 384..440. ENTERPRISE ISLAND has +$00=$00, +$01=$01, x=68..139, y=176..251 -> global X 68..139, Y 432..507. Several cells contain multiple islands at disjoint local rectangles (e.g. cell (1,0) holds KOKOLA, GILLIGANS and BONE), and several pairs of cells share a packed shape page at the same shape_base — e.g. BANANA ($9300), GIANTS GATEWAY ($9337) and GILLIGANS ($9354) all overlap each other's row-0 region. The self-modifying LDIR clamps in the SOUTH/RIGHT render variants (#R$787D, #R$77D2 and the corner variants) are what makes this packing safe: each island's engine only reads the cols [0..x_max-x_min-22] and rows [0..y_max-y_min-28] of its shape data, so even when two islands' shape rectangles overlap in memory, neither engine ever reads bytes that belong to the other's primary terrain.
+D $F230 Per-island shape-data extent (the EXACT range of bytes the engine reads when this island is active):
+D $F230   width  = x_max - x_min - 21  bytes wide  (= x_upper - x_min + 1 = x_max - x_origin + 1)
+D $F230   height = y_max - y_min - 27  bytes tall  (= y_origin_alt - y_min + 1 = y_max - y_origin + 1)
+D $F230   stride = 128 bytes per row (set by ADD HL,$0069 + 23 cols of LDIR at $7806/$780B and $7849)
+D $F230 Anything outside that rectangle is never touched by the flight engine for this island, even though the helicopter bound check in #R$76FC..$770D allows helX/helY all the way to (x_max, y_max). The reason is the SOUTH variant ($787D) sets the LDIR row count to (y_max - helY + 1) and the RIGHT variant ($77D2) self-modifies $783E to (x_max - helX + 1) columns, so as the helicopter approaches y_max or x_max the LDIR shrinks down to a single row or column at the boundary. tools/extract_map.py reads exactly this rectangle into the JSON output.
 D $F230 Decoded island world coordinates (centres/bounding boxes):
 D $F230   $F230  BANANA ISLAND      x= 92-168  y=128-184  z=114-146
 D $F230   $F244  FORTE ROCKS        x=136-211  y=  0- 57  z=158-189
