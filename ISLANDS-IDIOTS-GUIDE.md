@@ -7,20 +7,36 @@ look at the PNG output and know **exactly** what bytes produced each pixel.
 
 ## 1. The big picture
 
-Cyclone has **14 islands** in a fixed `256 × 256` world. None of the islands
-move; missions only change the *objectives* on top of them.
+Cyclone has **14 islands**. Each island's terrain lives somewhere in RAM
+between `$9300` and `$CFFF`. There is **one master table** at `$F230`
+that tells the engine where each island's terrain bytes live and what
+world rectangle it covers.
 
-Every island's terrain lives somewhere in RAM between `$9300` and `$CFFF`.
-There is **one master table** at `$F230` that tells the engine where each
-island's terrain bytes live and what world rectangle it covers.
-
-To recreate an island as a top-down PNG we need to answer three questions:
+To recreate one island as a top-down PNG we need to answer three questions:
 
 1. *Where in RAM is this island's terrain?*  → master table at `$F230`
 2. *What does each terrain byte mean?* → glyph font at `$FA00` + colour table at `$FE00` + tile-stack tables at `$6300`/`$6400`/…
 3. *How are the bytes laid out in 2-D?* → row stride is **128 bytes**, column stride is 1 byte.
 
-That's it. Everything else is detail.
+That's enough to render a single island PNG correctly. The harder
+question — *how the 14 islands are laid out into one big archipelago* —
+is **not** answered by the master table alone. See §10.
+
+> ⚠️ **What this guide does NOT explain.**
+> The 14 islands' world rectangles overlap each other heavily (21
+> overlapping pairs!). They cannot all live in one shared 256×256 plane
+> at the same time. The master table includes a `(type, subtype)`
+> selector that the engine matches *before* the X/Y bound check, so
+> at any given moment only a subset of islands is "active." The full
+> archipelago you see in published reference maps and on the
+> in-game navigation screen is the **union of multiple subsets**, and
+> the algorithm that spreads them out into one big world is **not**
+> currently decoded. The per-island PNGs in this repo are correct in
+> each island's *own* coordinate frame — but if you stitch them
+> together using the master-table `x_min`/`y_min` fields directly
+> (the way `tools/build_full_map.py` does), they will sit on top of
+> each other. That's a known limitation, not a bug in the per-island
+> PNGs.
 
 ---
 
@@ -31,10 +47,12 @@ describes one island. The fields you actually care about for rendering:
 
 | Offset | Name | What it means in plain English |
 |-------:|------|--------------------------------|
-| `+$02` | `x_min` | Westernmost world X the helicopter can reach over this island |
-| `+$03` | `x_max` | Easternmost world X |
-| `+$04` | `y_min` | Northernmost world Y |
-| `+$05` | `y_max` | Southernmost world Y |
+| `+$00` | `type` | **Scene selector**, high-level. The engine compares this with `($7501)` *before* doing the X/Y bound check. If they don't match the record is skipped entirely. |
+| `+$01` | `subtype` | **Scene selector**, finer. Compared with `($7503)`, same idea. Together with `type` this picks which subset of islands is "active" at any given moment. |
+| `+$02` | `x_min` | Westernmost world X the helicopter can reach over this island, *within its own scene*. |
+| `+$03` | `x_max` | Easternmost world X (same caveat). |
+| `+$04` | `y_min` | Northernmost world Y. |
+| `+$05` | `y_max` | Southernmost world Y. |
 | `+$06` | `x_origin` | **Always `x_min + 22`.** Used by the engine as a subtraction constant; you can ignore it for rendering. |
 | `+$07` | `x_upper` | **Always `x_max - 22`.** A "quadrant boundary" the engine uses to decide which screen-edge code path to run. **Not** a hard helicopter bound — that was the mistake the previous fix made. |
 | `+$08` | `y_origin` | `y_min + 28`. Same idea as `x_origin` but for Y. |
@@ -44,6 +62,14 @@ The hard bounds the helicopter actually obeys live at `$76F9-$7715`:
 `helX` is rejected if it's `< x_min` or `> x_max`; same for Y. That's
 why the engine genuinely reads up to world column `x_max` — and the
 shape data must extend that far.
+
+The `(type, subtype)` filter at `$76EC`-`$76F4` runs **first**, before
+the X/Y check, and skips records that don't match. This is what makes
+overlapping `(x_min..x_max, y_min..y_max)` rectangles safe: at most one
+record matches the *current* `($7501, $7503)` pair plus the helicopter
+position. In the master table, every pair of islands with overlapping
+world rectangles has a different `(type, subtype)` — no within-scene
+overlaps. So `(type, subtype)` is effectively a scene/level index.
 
 ---
 
@@ -290,3 +316,52 @@ Once you have the master table, the shape data, the font, the attribute
 table and the stack tables, you can produce every island's PNG with
 zero Z80 emulation. That's exactly what `extract_map.py` +
 `render_island_from_json.py` do.
+
+---
+
+## 10. Open question: the global archipelago layout
+
+The 14 islands' world rectangles overlap each other in the master
+table. They cannot all coexist in one shared 256×256 plane at the same
+time. Concretely:
+
+```
+BANANA ISLAND       x= 92-168  y=128-184   (type=2, sub=1)
+KOKOLA ISLAND       x= 87-161  y=148-204   (type=1, sub=0)
+LAGOON ISLAND       x=116-203  y=184-240   (type=0, sub=0)
+PEAK ISLAND         x= 40-101  y= 88-144   (type=2, sub=0)
+BASE ISLAND         x= 28-130  y= 80-136   (type=1, sub=1)
+... etc
+```
+
+BANANA and KOKOLA both want world `(110, 160)`, but they have different
+`(type, subtype)`. The engine's bound check at `$76EC..$7715` filters
+records by `(type, subtype)` **first**, then by `(x, y)`. So at any
+given moment only one island's bounds are even considered.
+
+Within each `(type, subtype)` value, the bounds are disjoint — I
+checked all pairs. So `(type, subtype)` is effectively a **scene
+index**: each scene is a 256×256 plane containing 1-3 islands.
+
+**What we don't yet know**: how the 14 islands are arranged into a
+single big archipelago for human-readable world maps (Pavero's map,
+the in-game navigation screen). The navigation screen position
+(`+$0C..+$0D`) is a hand-placed display-file address per island; it
+isn't computed from world coordinates. Whether the helicopter ever
+crosses *between* scenes during normal gameplay — and if so, how the
+"sea between scenes" is presented — is **not** decoded yet.
+
+Practical implication for this repo:
+
+- `images/island-<name>.png` (the per-island PNGs): **correct.**
+  Each is rendered in its own scene's coordinate frame.
+- `images/cyclone-full-map.png` (the stitched archipelago): **only
+  approximate.** It pastes islands at their `(x_min, y_min)` on a single
+  256×256 canvas, which is wrong precisely because the islands belong
+  to different scenes. That's why some labels look misplaced.
+
+If you want the *real* big-world layout, the missing piece is whatever
+code or data tells the engine "scene `(type=1, sub=0)` lives at
+archipelago position `(X, Y)`." That probably lives in the
+mission/level setup code we haven't fully traced yet (somewhere
+around the routines that initialise `($7501)` and `($7503)`).
