@@ -22,21 +22,16 @@ That's enough to render a single island PNG correctly. The harder
 question — *how the 14 islands are laid out into one big archipelago* —
 is **not** answered by the master table alone. See §10.
 
-> ⚠️ **What this guide does NOT explain.**
-> The 14 islands' world rectangles overlap each other heavily (21
-> overlapping pairs!). They cannot all live in one shared 256×256 plane
-> at the same time. The master table includes a `(type, subtype)`
-> selector that the engine matches *before* the X/Y bound check, so
-> at any given moment only a subset of islands is "active." The full
-> archipelago you see in published reference maps and on the
-> in-game navigation screen is the **union of multiple subsets**, and
-> the algorithm that spreads them out into one big world is **not**
-> currently decoded. The per-island PNGs in this repo are correct in
-> each island's *own* coordinate frame — but if you stitch them
-> together using the master-table `x_min`/`y_min` fields directly
-> (the way `tools/build_full_map.py` does), they will sit on top of
-> each other. That's a known limitation, not a bug in the per-island
-> PNGs.
+> 📐 **The world is 768 × 768, not 256 × 256.** Cyclone uses 16-bit
+> helicopter coordinates: low byte at `$7500`, high byte at `$7501`
+> for X (same for Y at `$7502`/`$7503`). The world is a 3 × 3 grid of
+> 256 × 256 cells. Master-table fields `+$00` / `+$01` (which earlier
+> docs called "type" / "subtype") are actually the **cell index** —
+> i.e. the high bytes of the helicopter's X / Y position.
+> `+$02..+$05` are LOCAL within-cell bounds. Global island position
+> is `(cell.x * 256 + x_local, cell.y * 256 + y_local)`. The
+> derivation, including the proof from the disassembly and a
+> cross-check against the in-game navigation map, is in §10.
 
 ---
 
@@ -319,49 +314,109 @@ zero Z80 emulation. That's exactly what `extract_map.py` +
 
 ---
 
-## 10. Open question: the global archipelago layout
+## 10. The global archipelago layout (decoded)
 
-The 14 islands' world rectangles overlap each other in the master
-table. They cannot all coexist in one shared 256×256 plane at the same
-time. Concretely:
+The 14 islands live in a **768 × 768** world made of a **3 × 3 grid
+of 256 × 256 cells**. Each island sits in exactly one cell.
+
+### How we know
+
+**Step 1 — the helicopter position is 16-bit.** In the per-frame
+motion update at `$81EC..$81F7`:
 
 ```
-BANANA ISLAND       x= 92-168  y=128-184   (type=2, sub=1)
-KOKOLA ISLAND       x= 87-161  y=148-204   (type=1, sub=0)
-LAGOON ISLAND       x=116-203  y=184-240   (type=0, sub=0)
-PEAK ISLAND         x= 40-101  y= 88-144   (type=2, sub=0)
-BASE ISLAND         x= 28-130  y= 80-136   (type=1, sub=1)
-... etc
+$81EC LD HL,($7500)   ; read 16-bit X from $7500/$7501
+$81EF NOP             ; (self-modified at runtime to ADD HL, BC etc.)
+$81F0 LD ($7500),HL   ; write back 16-bit X
+$81F3 LD HL,($7502)   ; read 16-bit Y from $7502/$7503
+$81F6 NOP             ; (self-modified)
+$81F7 LD ($7502),HL   ; write back 16-bit Y
 ```
 
-BANANA and KOKOLA both want world `(110, 160)`, but they have different
-`(type, subtype)`. The engine's bound check at `$76EC..$7715` filters
-records by `(type, subtype)` **first**, then by `(x, y)`. So at any
-given moment only one island's bounds are even considered.
+The motion routine reads, modifies and writes back the position as a
+**word** at each step. So `$7501` and `$7503` are the high bytes of X
+and Y, not separate fields.
 
-Within each `(type, subtype)` value, the bounds are disjoint — I
-checked all pairs. So `(type, subtype)` is effectively a **scene
-index**: each scene is a 256×256 plane containing 1-3 islands.
+**Step 2 — master table `+$00` / `+$01` are the high bytes of the
+helicopter's position when over that island.** The bound check at
+`$76EC..$76F4` does:
 
-**What we don't yet know**: how the 14 islands are arranged into a
-single big archipelago for human-readable world maps (Pavero's map,
-the in-game navigation screen). The navigation screen position
-(`+$0C..+$0D`) is a hand-placed display-file address per island; it
-isn't computed from world coordinates. Whether the helicopter ever
-crosses *between* scenes during normal gameplay — and if so, how the
-"sea between scenes" is presented — is **not** decoded yet.
+```
+$76E9 LD A,($7501)      ; high byte of helicopter X
+$76EC CP (IX+$00)       ; compare with the island's "+$00"
+$76EF JR NZ, skip       ; record skipped if they don't match
+$76F1 LD A,($7503)      ; high byte of helicopter Y
+$76F4 CP (IX+$01)       ; compare with the island's "+$01"
+$76F7 JR NZ, skip
+... then the local x_min..x_max / y_min..y_max check
+```
 
-Practical implication for this repo:
+`+$00` / `+$01` are matched **directly** against the X / Y high bytes.
+That makes them the cell index `(cell_x, cell_y)`, *not* arbitrary
+selector bytes.
 
-- `images/island-<name>.png` (the per-island PNGs): **correct.**
-  Each is rendered in its own scene's coordinate frame.
-- `images/cyclone-full-map.png` (the stitched archipelago): **only
-  approximate.** It pastes islands at their `(x_min, y_min)` on a single
-  256×256 canvas, which is wrong precisely because the islands belong
-  to different scenes. That's why some labels look misplaced.
+**Step 3 — sample the RZX and confirm.** I dumped `($7500..$7503)` at
+58 frames spread across the recorded play-through. The helicopter
+visits exactly **8 distinct `(xhi, yhi)` cells**:
 
-If you want the *real* big-world layout, the missing piece is whatever
-code or data tells the engine "scene `(type=1, sub=0)` lives at
-archipelago position `(X, Y)`." That probably lives in the
-mission/level setup code we haven't fully traced yet (somewhere
-around the routines that initialise `($7501)` and `($7503)`).
+```
+(0,0) (0,1) (0,2)
+(1,0) (1,1) (1,2)
+(2,0) (2,1)
+```
+
+These are exactly the eight `(+$00, +$01)` values that occur in the
+master table. Cell `(2,2)` is empty — no island lives there, and the
+helicopter never enters it during the recording. So the inhabited
+world is a 3 × 3 grid (one cell unused).
+
+**Step 4 — cross-check against the navigation screen.** Sorting the
+14 islands by `global_X = cell_x * 256 + x_local` and independently
+by `navmap_col` produces **the same order**. Same for global Y vs
+navmap pixel_y. The navmap is essentially a downscaled rendering of
+the 768 × 768 world: navmap col ≈ `global_x_center / 32`, pixel_y ≈
+`(global_y_center − 20) / 4`. The artist hand-placed the navmap
+sprites within a few pixels of the mathematical mapping, but the
+ordering is exact.
+
+### The 14 islands in absolute world coordinates
+
+| Island             | cell   | local x   | local y   | **global x** | **global y** |
+|--------------------|:------:|----------:|----------:|-------------:|-------------:|
+| LAGOON ISLAND      | (0, 0) |  116-203  |  184-240  |   **116-203** |   **184-240** |
+| ENTERPRISE ISLAND  | (0, 1) |   68-139  |  176-251  |    **68-139** |   **432-507** |
+| LUKELAND ISLES     | (0, 2) |   48-109  |   48-108  |    **48-109** |   **560-620** |
+| SKEG ISLAND        | (0, 2) |  112-173  |    0- 56  |   **112-173** |   **512-568** |
+| KOKOLA ISLAND      | (1, 0) |   87-161  |  148-204  |   **343-417** |   **148-204** |
+| GILLIGANS ISLAND   | (1, 0) |   28- 94  |   88-145  |   **284-350** |    **88-145** |
+| BONE ISLAND        | (1, 0) |  172-255  |  124-180  |   **428-511** |   **124-180** |
+| BASE ISLAND        | (1, 1) |   28-130  |   80-136  |   **284-386** |   **336-392** |
+| GIANTS GATEWAY     | (1, 1) |  152-203  |   12- 80  |   **408-459** |   **268-336** |
+| CLAW ISLAND        | (1, 1) |  196-253  |  192-254  |   **452-509** |   **448-510** |
+| FORTE ROCKS        | (1, 2) |  136-211  |    0- 57  |   **392-467** |   **512-569** |
+| RED ISLAND         | (1, 2) |  120-182  |   64-120  |   **376-438** |   **576-632** |
+| PEAK ISLAND        | (2, 0) |   40-101  |   88-144  |   **552-613** |    **88-144** |
+| BANANA ISLAND      | (2, 1) |   92-168  |  128-184  |   **604-680** |   **384-440** |
+
+In global coords there are **no overlaps** — every island has a
+disjoint rectangle. The ASCII archipelago in `ISLANDS.md` (which uses
+local-cell coords and so puts everyone on one 256-grid) misrepresents
+the layout; the real layout has open sea between cells.
+
+### Practical consequences
+
+- `extract_map.py` now emits both `cell` and `global_world_bounds` per
+  island. Use `global_world_bounds` if you want a Pavero-style world
+  map.
+- `tools/build_full_map.py` currently composites onto a 256 × 256
+  canvas using the helicopter's *current* `($7500, $7502)` (low bytes
+  only). That happens to work as a rough sketch because the
+  helicopter's high bytes change as it moves between cells, but the
+  composite ignores the high bytes when placing islands — that's why
+  the labels look misplaced. The fix is straightforward: enlarge the
+  canvas to 768 × 768 and paste at `(cell_x*256 + xlo, cell_y*256 + ylo)`.
+- "How does the helicopter cross between cells?" — by simple 16-bit
+  arithmetic. The motion routine at `$81EC..$81F7` adds a velocity
+  vector to the 16-bit position, so when the low byte wraps, the
+  high byte naturally advances and the engine starts seeing a
+  different set of records on the next frame.

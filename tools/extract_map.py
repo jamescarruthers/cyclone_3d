@@ -310,15 +310,36 @@ def extract(snapshot_path: str) -> dict:
 
         flight_shape = extract_flight_shape(ram, i, all_records)
 
+        # Global (archipelago-wide) world position.
+        # Cyclone's world is 768x768 (= 3x3 cells of 256x256).  The helicopter
+        # position lives at $7500/$7501 (16-bit X) and $7502/$7503 (16-bit Y).
+        # Master-table fields +$00/+$01 are NOT type/subtype — they're the
+        # high bytes of the helicopter's global position, i.e. the cell
+        # index.  The flight engine compares them at $76EC..$76F4 to filter
+        # records to "the cell I'm currently in".  The world rectangle
+        # (+$02..+$05) is then expressed in LOCAL within-cell coordinates,
+        # which is why several records overlap there but not in absolute
+        # world space.  See ISLANDS-IDIOTS-GUIDE.md §10 for the derivation.
+        cell_x, cell_y = rec[0x00], rec[0x01]
+        gx_min = cell_x * 256 + rec[0x02]
+        gx_max = cell_x * 256 + rec[0x03]
+        gy_min = cell_y * 256 + rec[0x04]
+        gy_max = cell_y * 256 + rec[0x05]
+
         islands.append({
             "index": i,
             "name": ISLAND_NAMES[i],
             "record_addr": f"0x{rec_addr:04X}",
-            "type": rec[0x00],
-            "subtype": rec[0x01],
+            "cell": {"x": cell_x, "y": cell_y},
+            "type": rec[0x00],          # legacy alias for cell.x
+            "subtype": rec[0x01],       # legacy alias for cell.y
             "world_bounds": {
                 "x_min": rec[0x02], "x_max": rec[0x03],
                 "y_min": rec[0x04], "y_max": rec[0x05],
+            },
+            "global_world_bounds": {
+                "x_min": gx_min, "x_max": gx_max,
+                "y_min": gy_min, "y_max": gy_max,
             },
             "altitude": {"z_min": rec[0x06], "z_max": rec[0x07]},
             "secondary_bounds": [rec[0x08], rec[0x09]],
@@ -403,7 +424,22 @@ def extract(snapshot_path: str) -> dict:
     return {
         "source": snapshot_path,
         "game": "Cyclone (Vortex Software, 1985)",
-        "world": {"width": 256, "height": 256, "units": "abstract world units"},
+        "world": {
+            "width": 768,
+            "height": 768,
+            "cell_size": 256,
+            "cells_x": 3,
+            "cells_y": 3,
+            "units": "abstract world units",
+            "note": (
+                "Helicopter position is 16-bit at $7500/$7501 (X) and "
+                "$7502/$7503 (Y). The world is 3x3 cells of 256x256, "
+                "addressed by (high_X, high_Y) = (cell.x, cell.y). "
+                "Master-table fields +$00/+$01 are the cell index of the "
+                "island; +$02..+$05 are LOCAL bounds within that cell. "
+                "Use island.global_world_bounds for absolute coords."
+            ),
+        },
         "tile_grid": {"cols": 16, "rows": 16},
         "tile_pixels": {"width": 8, "height": 8},
         "addresses": {
@@ -415,12 +451,12 @@ def extract(snapshot_path: str) -> dict:
             "shape_region": ["0x9300", "0xCFFF"],
         },
         "record_layout": [
-            {"offset": "+0x00", "field": "type"},
-            {"offset": "+0x01", "field": "subtype"},
-            {"offset": "+0x02", "field": "x_min (world; helicopter min X)"},
-            {"offset": "+0x03", "field": "x_max (world; helicopter max X)"},
-            {"offset": "+0x04", "field": "y_min (world; helicopter min Y)"},
-            {"offset": "+0x05", "field": "y_max (world; helicopter max Y)"},
+            {"offset": "+0x00", "field": "cell_x (= high byte of helicopter X at $7501; selects which 256-wide column the island lives in within the 768x768 world)"},
+            {"offset": "+0x01", "field": "cell_y (= high byte of helicopter Y at $7503; selects which 256-tall row the island lives in)"},
+            {"offset": "+0x02", "field": "x_min (LOCAL within-cell; helicopter min X low byte). Global X = cell_x*256 + x_min."},
+            {"offset": "+0x03", "field": "x_max (LOCAL within-cell; helicopter max X low byte)"},
+            {"offset": "+0x04", "field": "y_min (LOCAL within-cell; helicopter min Y low byte). Global Y = cell_y*256 + y_min."},
+            {"offset": "+0x05", "field": "y_max (LOCAL within-cell; helicopter max Y low byte)"},
             {"offset": "+0x06", "field": "x_origin = x_min + 22 (flight engine subtracts this from helX before copying a 23-column window; shape_base column 0 therefore maps to world x_min)"},
             {"offset": "+0x07", "field": "x_upper = x_max - 22 (used by the helicopter-bound checks, not as the right edge of the shape data)"},
             {"offset": "+0x08", "field": "y_origin = y_min + 28 (flight engine subtracts this from helY before copying a 29-row window; shape_base row 0 therefore maps to world y_min)"},
