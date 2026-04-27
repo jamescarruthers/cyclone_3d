@@ -28,7 +28,7 @@ SKOOL      := $(BUILD)/cyclone.skool
 REASM      := $(BUILD)/cyclone.reassembled.bin
 HTML_DIR   := $(BUILD)/html
 
-.PHONY: all tape snapshot ctl-auto map ctl-rzx skool verify mapdata islands html clean
+.PHONY: all tape snapshot ctl-auto map ctl-rzx skool verify mapdata webdata islands html clean
 
 all: skool
 
@@ -116,6 +116,13 @@ mapdata: $(BUILD)/cyclone-map.json
 
 $(BUILD)/cyclone-map.json: $(BUILD)/cyclone-endgame.z80 tools/extract_map.py
 	python3 tools/extract_map.py $(BUILD)/cyclone-endgame.z80 $(BUILD)/cyclone-map.json
+
+# Compact the rich JSON down to the minimum the 3D web app needs.  The
+# browser fetches web/data.json directly — see web/README.md for serving.
+webdata: web/data.json
+
+web/data.json: $(BUILD)/cyclone-map.json tools/build_web_data.py
+	python3 tools/build_web_data.py $(BUILD)/cyclone-map.json web/data.json
 
 # Render a top-down PNG for each of the 14 islands using the data extracted
 # by extract_map.py.  Running with no island argument renders all of them.
