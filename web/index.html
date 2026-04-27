@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cyclone 3D — isometric world map</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; height: 100%;
+               background: #0a0a14; color: #e8e8f0;
+               font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #c { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #c.dragging { cursor: grabbing; }
+
+  #hud { position: fixed; top: 12px; left: 12px; pointer-events: none;
+         max-width: 360px; line-height: 1.45; }
+  #hud .panel { background: rgba(10, 10, 24, 0.78); border: 1px solid #303048;
+                padding: 10px 14px; border-radius: 6px; pointer-events: auto;
+                backdrop-filter: blur(6px); }
+  #hud h1 { margin: 0 0 6px; font-size: 14px; color: #ffd86b; letter-spacing: 0.04em; }
+  #hud p { margin: 4px 0; font-size: 12px; color: #c8c8d8; }
+  #hud kbd { background: #2a2a44; border: 1px solid #4a4a6a; border-bottom-width: 2px;
+             border-radius: 3px; padding: 1px 5px; font-size: 11px; color: #ffd86b; }
+  #hud .small { font-size: 11px; color: #8a8aa6; }
+
+  #legend { position: fixed; top: 12px; right: 12px; pointer-events: auto;
+            background: rgba(10, 10, 24, 0.78); border: 1px solid #303048;
+            padding: 8px 12px; border-radius: 6px; font-size: 11px;
+            max-height: 70vh; overflow-y: auto; }
+  #legend h2 { margin: 0 0 4px; font-size: 12px; color: #ffd86b; letter-spacing: 0.04em; }
+  #legend ol { margin: 0; padding: 0 0 0 20px; color: #c8c8d8; }
+  #legend li { cursor: pointer; padding: 1px 4px; border-radius: 3px; }
+  #legend li:hover { background: #2a2a44; color: #ffd86b; }
+
+  #status { position: fixed; bottom: 10px; left: 12px; font-size: 11px;
+            color: #8a8aa6; }
+
+  #loader { position: fixed; inset: 0; display: flex; align-items: center;
+            justify-content: center; background: #0a0a14; z-index: 10;
+            font-size: 14px; color: #ffd86b; }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div id="loader">decoding archipelago&hellip;</div>
+
+  <div id="hud">
+    <div class="panel">
+      <h1>CYCLONE — 3D ARCHIPELAGO</h1>
+      <p class="small">14 islands &middot; 768&times;768 world &middot;
+        glyphs &amp; colours straight from the 1985 tape.</p>
+      <p>
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or
+        <kbd>&larr;&uarr;&darr;&rarr;</kbd> &mdash; pan<br>
+        <kbd>Q</kbd>/<kbd>E</kbd> &mdash; rotate &middot;
+        <kbd>R</kbd>/<kbd>F</kbd> &mdash; pitch<br>
+        <kbd>wheel</kbd> &mdash; zoom &middot;
+        drag &mdash; pan &middot; right-drag &mdash; rotate<br>
+        <kbd>1</kbd>&hellip;<kbd>9</kbd>/<kbd>0</kbd> &mdash; jump to island<br>
+        <kbd>Space</kbd> &mdash; reset view &middot;
+        <kbd>G</kbd> &mdash; toggle ground glyphs
+      </p>
+    </div>
+  </div>
+
+  <div id="legend">
+    <h2>ISLANDS</h2>
+    <ol id="island-list"></ol>
+  </div>
+
+  <div id="status"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
