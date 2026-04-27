@@ -81,7 +81,10 @@ def render(json_path: str, island_name: str, scale: int, out_path: str) -> None:
 
     # Draw cells back-to-front (top of screen first) so closer cells
     # overwrite farther ones — same write order as the game engine
-    # ($7E10 walks UP from the base position).
+    # ($7E10 walks UP from the base position).  No mask needed: the
+    # extractor already trimmed to the engine's exact read window
+    # (cols = x_max - x_min - 21, rows = y_max - y_min - 27), so every
+    # byte in `rows` is one the engine actually reads for this island.
     for y in range(H):
         for x, raw in enumerate(rows[y]):
             stack = tile_stacks[raw]

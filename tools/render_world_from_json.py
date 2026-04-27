@@ -32,40 +32,6 @@ def attr_colours(attr_value: int) -> tuple:
     return p[attr_value & 7], p[(attr_value >> 3) & 7]
 
 
-def find_clean_rows(rows: list, calibration_rows: int = 16) -> int:
-    """Some islands' flight_shape extends past the documented shape region
-    ($9300-$CFFF) into runtime work-RAM (BASE, LUKELAND, ENTERPRISE all
-    do this).  Those bytes aren't terrain — they're whatever runtime
-    state happened to be at that address — and they render as garbage.
-
-    Heuristic: an island's terrain uses a fairly stable set of tile byte
-    values.  Calibrate that vocabulary from the first 16 rows.  Walk
-    further; if two consecutive non-empty rows have >30% of their bytes
-    unseen in the vocabulary, we've crossed into alien memory — return
-    the last in-vocab row.  Empty rows (all zeros) are skipped (some
-    islands legitimately store two views with a sea gap between).
-    """
-    if len(rows) <= calibration_rows:
-        return len(rows)
-    vocab = set()
-    for r in rows[:calibration_rows]:
-        vocab.update(r)
-    streak = 0
-    for i, row in enumerate(rows[calibration_rows:], start=calibration_rows):
-        non_zero = [b for b in row if b != 0]
-        if not non_zero:
-            continue
-        alien = sum(1 for b in non_zero if b not in vocab)
-        if alien > len(non_zero) * 0.30:
-            streak += 1
-            if streak >= 2:
-                return i - 1
-        else:
-            streak = 0
-            vocab.update(non_zero)
-    return len(rows)
-
-
 def render(json_path: str, scale: int, out_path: str) -> None:
     data = json.loads(Path(json_path).read_text())
     glyphs = {g["index"]: g["bytes"] for g in data["tile_glyphs"]}
@@ -112,12 +78,11 @@ def render(json_path: str, scale: int, out_path: str) -> None:
     for isl in islands:
         fs = isl["flight_shape"]
         rows = fs["tiles"]
-        clean = find_clean_rows(rows)
-        if clean < len(rows):
-            print(f"  {isl['name']}: trimmed {len(rows)-clean} garbage rows "
-                  f"({clean}/{len(rows)} kept)")
-        rows = rows[:clean]
         # global_world_bounds.x_min/y_min map to flight_shape row/col 0.
+        # No mask or trim needed: extract_map.py already clipped to the
+        # engine's exact read window per the south/right self-modifying
+        # variants, so every byte here is one the engine reads for THIS
+        # island and only this island.
         gx_origin = isl["global_world_bounds"]["x_min"]
         gy_origin = isl["global_world_bounds"]["y_min"]
 
