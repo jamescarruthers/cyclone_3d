@@ -194,20 +194,40 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
     are the helicopter-position subtrahends; shape_base + 0 maps to world
     (x_min, y_min).
 
-    Column range: the helicopter X is constrained strictly below x_upper
-    (rec[+$07] = x_max - 22), so helX ranges over [x_origin .. x_upper - 1].
-    At helX = x_upper - 1 the 23-col LDIR window ends at shape col
-    (x_upper - 1 - x_origin) + 22 = x_upper - x_min - 1.  The column count
-    is therefore x_upper - x_min.  Using x_max instead reads x_max - x_upper
-    (= 22) extra columns that belong to a neighbouring island's packed shape
-    data (e.g. GILLIGANS is packed exactly x_upper - x_min bytes after
-    GIANTS GATEWAY's shape_base, and ENTERPRISE exactly that many bytes after
-    LUKELAND's).
+    Helicopter bounds (from the disassembly at $76F9-$7715):
+        $76F9 LD A,($7500) ; helX
+        $76FC CP (IX+$02)  ; vs x_min  (rec[+$02])
+        $76FF JR C,fail    ;   helX < x_min → reject
+        $7701 DEC A
+        $7702 CP (IX+$03)  ; vs x_max  (rec[+$03])
+        $7705 JR NC,fail   ;   helX > x_max → reject
+        $7707 LD A,($7502) ; helY
+        $770A CP (IX+$04)  ; vs y_min
+        $770D JR C,fail    ;   helY < y_min → reject
+        $770F DEC A
+        $7710 CP (IX+$05)  ; vs y_max
+        $7713 JR NC,fail   ;   helY > y_max → reject
+    The hard bounds are therefore [x_min, x_max] × [y_min, y_max].  The
+    related test at $7728-$7740 against rec[+$06]/+$07 is NOT a bound
+    check — it sets bits 2..5 of register C to classify which "quadrant"
+    the helicopter is in, then dispatches via the jump table at $78CF.
 
-    Row range: the helicopter Y is constrained to [y_origin .. y_max].  At
-    helY = y_max the engine reads shape rows (y_max - y_min - 28) ..
-    (y_max - y_min), so the full row count y_max - y_min + 1 is needed to
-    show the complete island top-to-bottom.
+    At maximum helX = x_max the 23-byte LDIR window ends at shape column
+        (x_max - x_origin) + 22 = (x_max - x_min - 22) + 22 = x_max - x_min
+    so the data the engine actually reads spans columns 0 .. x_max - x_min,
+    i.e. width = x_max - x_min + 1 = the full world width.  At maximum
+    helY = y_max the bottom LDIR row is y_max - y_min, so rows likewise
+    span 0 .. y_max - y_min (full world height).
+
+    Some islands share a memory page by packing their shape_base pointers
+    inside another island's row-0 region (e.g. GIANTS GATEWAY at $9337
+    sits exactly x_upper(BANANA) - x_min(BANANA) = 22 bytes inside
+    BANANA's row 0).  When BANANA's engine reads its rightmost columns
+    (helX > x_origin + 32) it physically reads bytes that GIANTS GATEWAY
+    also reads as ITS leftmost columns — the same RAM bytes are shared
+    between the two islands' renderings, by design.  We extract the full
+    world rectangle anyway: those bytes are exactly what the player sees
+    when flying over the east edge of the island.
     """
     def get(addr):
         a = addr & 0xFFFF
@@ -216,16 +236,14 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
     rec = all_records[rec_idx]
     shape_base = rec[0x0A] | (rec[0x0B] << 8)
     x_min = rec[0x02]
+    x_max = rec[0x03]
     y_min = rec[0x04]
     y_max = rec[0x05]
     x_origin = rec[0x06]
-    x_upper = rec[0x07]   # = x_max - 22; the engine's X upper bound
+    x_upper = rec[0x07]
     y_origin = rec[0x08]
 
-    # Rightmost column the engine ever reads is x_upper - x_min - 1
-    # (at helX = x_upper - 1, the 23-col window ends at col x_upper - x_origin + 21
-    #  = x_upper - x_min - 22 + 21 = x_upper - x_min - 1).
-    cols = x_upper - x_min
+    cols = x_max - x_min + 1
     rows = y_max - y_min + 1
 
     tiles = []
@@ -237,9 +255,10 @@ def extract_flight_shape(ram: bytes, rec_idx: int, all_records: list) -> dict:
         tiles.append(row)
 
     return {
-        "world_x_range": [x_min, x_min + cols - 1],
+        "world_x_range": [x_min, x_max],
         "world_y_range": [y_min, y_max],
         "x_origin": x_origin,
+        "x_upper": x_upper,
         "y_origin": y_origin,
         "view_cols": cols,
         "view_rows": rows,
