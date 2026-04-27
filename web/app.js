@@ -231,9 +231,22 @@ function buildIslands() {
   };
 
   // Walk every island, every cell, every stack level — collect a flat list
-  // of cubes.  Skip tile 0 at level 0 (open sea) — the sea plane already
-  // covers it.  Skip "skip" levels.
+  // of cells to render.  Skip tile 0 at level 0 (open sea) — the sea plane
+  // already covers it.  Skip "skip" levels.
+  //
+  // Some non-sea tiles (32 of them) have BRIGHT CYAN paper, the same colour
+  // as the sea.  These are coastline-detail tiles: mostly sea, with a few
+  // ink pixels of land.  Rendered as a full cube, their side faces show
+  // solid cyan and look like blue blocks rising out of the water once the
+  // camera rotates off iso.  Render those as flat top-only quads at sea
+  // level instead — visually identical from above, invisible from the side.
+  const SEA_PAPER_BIT = 0x40 | (5 << 3);   // bright + paper=cyan
+  const SEA_PAPER_MASK = 0x40 | (7 << 3);  // bright + paper bits
+  const isSeaPaper = (tIdx) =>
+    (data.attrs[tIdx] & SEA_PAPER_MASK) === SEA_PAPER_BIT;
+
   const cubes = [];
+  const planes = [];
   for (const isl of data.islands) {
     const grid = isl.tiles;
     for (let r = 0; r < grid.length; r++) {
@@ -246,12 +259,16 @@ function buildIslands() {
           if (tIdx === -1) continue;             // skip marker ($FE)
           const wx = isl.x + c;
           const wz = isl.y + r;
-          cubes.push([wx, lvl, wz, tIdx]);
+          if (isSeaPaper(tIdx)) {
+            planes.push([wx, wz, tIdx]);
+          } else {
+            cubes.push([wx, lvl, wz, tIdx]);
+          }
         }
       }
     }
   }
-  state.totalCubes = cubes.length;
+  state.totalCubes = cubes.length + planes.length;
 
   // Build geometries: one merged BufferGeometry per "group of 5000 cubes"
   // so we don't blow buffer-size limits on weak GPUs.  Per-cube UVs are
@@ -272,6 +289,23 @@ function buildIslands() {
     geoms.forEach(g => g.dispose());
     const mesh = new THREE.Mesh(merged, material);
     group.add(mesh);
+  }
+
+  // Sea-decoration quads: one merged double-sided plane mesh per chunk,
+  // sitting just above the sea plane to avoid z-fighting.
+  if (planes.length) {
+    const planeMat = new THREE.MeshLambertMaterial({
+      map: atlas, side: THREE.DoubleSide,
+    });
+    state.planeMaterial = planeMat;
+    for (let i = 0; i < planes.length; i += CHUNK) {
+      const slice = planes.slice(i, i + CHUNK);
+      const geoms = slice.map(([wx, wz, tIdx]) => makeCellPlane(wx, wz, tIdx, uvForTile));
+      const merged = mergeGeometries(geoms, false);
+      geoms.forEach(g => g.dispose());
+      const mesh = new THREE.Mesh(merged, planeMat);
+      group.add(mesh);
+    }
   }
   state.scene.add(group);
   state.worldGroup = group;
@@ -306,6 +340,28 @@ function makeCellBox(wx, lvl, wz, tIdx, uvForTile) {
     uvs[o + 6] = u(1); uvs[o + 7] = v(0);
   }
   uv.needsUpdate = true;
+  return g;
+}
+
+// Flat horizontal quad for a "sea-decoration" tile (paper colour matches
+// the sea).  Sits a hair above the sea plane so the glyph reads on top
+// without z-fighting; from the side it has no thickness so it doesn't
+// produce blue blocks when the camera rotates off iso.
+function makeCellPlane(wx, wz, tIdx, uvForTile) {
+  const g = new THREE.PlaneGeometry(TILE, TILE);
+  g.rotateX(-Math.PI / 2);
+  g.translate(wx + 0.5, -SEA_DROP + 0.01, wz + 0.5);
+
+  const { u0, v0, u1, v1 } = uvForTile(tIdx);
+  const uvs = g.attributes.uv.array;
+  // PlaneGeometry has 4 verts in order (TL, TR, BL, BR) in canonical UVs
+  // (0,1) (1,1) (0,0) (1,0).  After rotateX the plane points up but vertex
+  // order is unchanged, so the same UV mapping works.
+  uvs[0] = u0; uvs[1] = v1;
+  uvs[2] = u1; uvs[3] = v1;
+  uvs[4] = u0; uvs[5] = v0;
+  uvs[6] = u1; uvs[7] = v0;
+  g.attributes.uv.needsUpdate = true;
   return g;
 }
 
