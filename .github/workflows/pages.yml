@@ -1,7 +1,8 @@
-name: Deploy SkoolKit HTML to GitHub Pages
+name: Deploy 3D world map to GitHub Pages
 
-# Builds the Cyclone disassembly (tap2sna + sna2skool + skool2html) and
-# publishes build/html/cyclone/ to GitHub Pages.
+# Builds the 3D archipelago viewer (web/data.json from cyclone.rzx via
+# tools/extract_map.py + tools/build_web_data.py) and publishes web/ to
+# GitHub Pages.
 #
 # Requires:
 #   - Repository Settings > Pages > Build and deployment > Source set to
@@ -38,11 +39,11 @@ jobs:
       - name: Install SkoolKit
         run: pip install -r requirements.txt
 
-      - name: Build HTML disassembly
-        run: make html
-
-      - name: Verify round-trip byte equality
-        run: make verify
+      # `make webdata` chains: rzxplay.py cyclone.rzx -> build/cyclone-endgame.z80
+      # -> tools/extract_map.py -> build/cyclone-map.json
+      # -> tools/build_web_data.py -> web/data.json.
+      - name: Build web data
+        run: make webdata
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -50,7 +51,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: build/html/cyclone
+          path: web
 
   deploy:
     needs: build
