@@ -100,10 +100,10 @@ function initRenderer() {
   renderer.setSize(innerWidth, innerHeight, false);
   renderer.setClearColor(0x0a0a14);
 
-  // Sea-blue tint matches Cyclone's bright-cyan paper for tile 0 (attr $6F).
+  // Solid background; the sea plane carries the gradient by itself.  No
+  // scene.fog — that would tint distant cubes too.
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x102030);
-  scene.fog = new THREE.Fog(0x0a0a14, 350, 1100);
+  scene.background = new THREE.Color(0x05101c);
 
   // Orthographic camera gives a clean isometric look without
   // perspective foreshortening.
@@ -198,15 +198,56 @@ function buildGlyphAtlas() {
 function buildSea() {
   const { data } = state;
   const { paper } = attrColours(data.attrs[SEA_TILE]);
-  const seaMat = new THREE.MeshLambertMaterial({
-    color: new THREE.Color(`rgb(${paper[0]},${paper[1]},${paper[2]})`),
-  });
-  // Slightly larger than world bounds so islands are floating in a lagoon.
+  const sea = new THREE.Color(paper[0] / 255, paper[1] / 255, paper[2] / 255);
+  // Deep-teal horizon — the colour the sea fades to far from the archipelago.
+  const horizon = new THREE.Color(0x05101c);
+
+  // Custom shader so the gradient is confined to the sea plane and isn't
+  // applied to islands, sky, or anything else.  Radial fade from the
+  // archipelago centre out to the edge of the visible plane.
   const W = data.world_w, H = data.world_h;
-  const geom = new THREE.PlaneGeometry(W * 1.15, H * 1.15);
+  const cx = state.centre.x, cz = state.centre.z;
+  const fadeStart = Math.max(W, H) * 0.35;
+  const fadeEnd   = Math.max(W, H) * 1.60;
+
+  const seaMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uNear:      { value: sea },
+      uFar:       { value: horizon },
+      uCenter:    { value: new THREE.Vector2(cx, cz) },
+      uFadeStart: { value: fadeStart },
+      uFadeEnd:   { value: fadeEnd },
+    },
+    vertexShader: `
+      varying vec2 vWorldXZ;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldXZ = wp.xz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uNear;
+      uniform vec3 uFar;
+      uniform vec2 uCenter;
+      uniform float uFadeStart;
+      uniform float uFadeEnd;
+      varying vec2 vWorldXZ;
+      void main() {
+        float d = distance(vWorldXZ, uCenter);
+        float t = smoothstep(uFadeStart, uFadeEnd, d);
+        gl_FragColor = vec4(mix(uNear, uFar, t), 1.0);
+      }
+    `,
+  });
+
+  // Make the plane large enough that it fills the visible area at any
+  // zoom — at fitDistance we see ~4x the bbox span, so 6x is plenty.
+  const size = Math.max(W, H) * 6;
+  const geom = new THREE.PlaneGeometry(size, size);
   geom.rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geom, seaMat);
-  mesh.position.set(W / 2, -SEA_DROP, H / 2);
+  mesh.position.set(cx, -SEA_DROP, cz);
   state.scene.add(mesh);
   state.seaGroup = mesh;
 }
