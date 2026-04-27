@@ -4,11 +4,17 @@
 Scans the shipped RZX replay, finds the frame where the helicopter is best
 centred over each of the 14 islands (bounds taken from the decoded master
 table at $F230), grabs a snapshot, renders the screen via sna2img.py, then
-crops the playfield and composites all 14 onto a single big canvas at each
-island's world coordinates.
+crops the playfield and composites all 14 onto a single 768x768 canvas at
+each island's GLOBAL world coordinates.
+
+The world is not 256x256 but 768x768: a 3x3 grid of 256x256 cells indexed
+by the high bytes of helX ($7501) and helY ($7503).  Each master-table
+record carries (cell_x, cell_y) at +$00/+$01 and a local low-byte rectangle
+at +$02..+$05.  The helicopter's true position in the world is therefore
+(cell_x*256 + xlo, cell_y*256 + ylo) — that's the coordinate we paste at.
 
 The point: every step uses the actual game's data or its own renderer
-— no hand-drawn island artwork, no custom geometry. If the composite
+— no hand-drawn island artwork, no custom geometry.  If the composite
 matches reference maps such as Pavero's 2004 one, the decoding in
 cyclone.ctl is correct.
 """
@@ -22,22 +28,23 @@ from PIL import Image
 from skoolkit.snapshot import Snapshot
 
 
-# (record addr, shape base, human name, (x_min, x_max, y_min, y_max))
+# (record addr, shape base, human name, cell_x, cell_y, (x_min, x_max, y_min, y_max))
+# Local low-byte bounds within the cell.  Global = cell*256 + local.
 ISLANDS = [
-    (0xF230, 0x9300, "BANANA ISLAND",     ( 92, 168, 128, 184)),
-    (0xF244, 0x9D00, "FORTE ROCKS",       (136, 211,   0,  57)),
-    (0xF258, 0xA900, "KOKOLA ISLAND",     ( 87, 161, 148, 204)),
-    (0xF26C, 0xB600, "LAGOON ISLAND",     (116, 203, 184, 240)),
-    (0xF280, 0xC300, "PEAK ISLAND",       ( 40, 101,  88, 144)),
-    (0xF294, 0xCF80, "BASE ISLAND",       ( 28, 130,  80, 136)),
-    (0xF2A8, 0x9354, "GILLIGANS ISLAND",  ( 28,  94,  88, 145)),
-    (0xF2BC, 0x9FD8, "RED ISLAND",        (120, 182,  64, 120)),
-    (0xF2D0, 0xADD8, "SKEG ISLAND",       (112, 173,   0,  56)),
-    (0xF2E4, 0xB843, "BONE ISLAND",       (172, 255, 124, 180)),
-    (0xF2F8, 0x9337, "GIANTS GATEWAY",    (152, 203,  12,  80)),
-    (0xF30C, 0xA735, "CLAW ISLAND",       (196, 253, 192, 254)),
-    (0xF320, 0xC628, "LUKELAND ISLES",    ( 48, 109,  48, 108)),
-    (0xF334, 0xC64F, "ENTERPRISE ISLAND", ( 68, 139, 176, 251)),
+    (0xF230, 0x9300, "BANANA ISLAND",     2, 1, ( 92, 168, 128, 184)),
+    (0xF244, 0x9D00, "FORTE ROCKS",       1, 2, (136, 211,   0,  57)),
+    (0xF258, 0xA900, "KOKOLA ISLAND",     1, 0, ( 87, 161, 148, 204)),
+    (0xF26C, 0xB600, "LAGOON ISLAND",     0, 0, (116, 203, 184, 240)),
+    (0xF280, 0xC300, "PEAK ISLAND",       2, 0, ( 40, 101,  88, 144)),
+    (0xF294, 0xCF80, "BASE ISLAND",       1, 1, ( 28, 130,  80, 136)),
+    (0xF2A8, 0x9354, "GILLIGANS ISLAND",  1, 0, ( 28,  94,  88, 145)),
+    (0xF2BC, 0x9FD8, "RED ISLAND",        1, 2, (120, 182,  64, 120)),
+    (0xF2D0, 0xADD8, "SKEG ISLAND",       0, 2, (112, 173,   0,  56)),
+    (0xF2E4, 0xB843, "BONE ISLAND",       1, 0, (172, 255, 124, 180)),
+    (0xF2F8, 0x9337, "GIANTS GATEWAY",    1, 1, (152, 203,  12,  80)),
+    (0xF30C, 0xA735, "CLAW ISLAND",       1, 1, (196, 253, 192, 254)),
+    (0xF320, 0xC628, "LUKELAND ISLES",    0, 2, ( 48, 109,  48, 108)),
+    (0xF334, 0xC64F, "ENTERPRISE ISLAND", 0, 1, ( 68, 139, 176, 251)),
 ]
 
 
@@ -55,7 +62,14 @@ def is_flight_view(ram: bytes) -> bool:
 
 
 def pick_best_frames(scan_dir: str) -> dict:
-    """Scan snapshot dir, return {island_name: (frame, snapshot_path)}."""
+    """Scan snapshot dir, return {island_name: (frame, snapshot_path)}.
+
+    Compares the FULL 16-bit helicopter position (cell + local) against each
+    island's full (cell, local-bounds) rectangle.  This rules out spurious
+    matches when the low bytes happen to fall in another cell's island
+    rectangle (e.g. helX-low=92 is "BANANA's range" only when cell_x=2;
+    when cell_x=0 the same low byte is over LAGOON ISLAND).
+    """
     paths = sorted(
         glob.glob(f"{scan_dir}/f*.z80"),
         key=lambda p: int(re.search(r"f(\d+)", p).group(1)),
@@ -64,17 +78,20 @@ def pick_best_frames(scan_dir: str) -> dict:
     for p in paths:
         frame = int(re.search(r"f(\d+)", p).group(1))
         ram = bytes(Snapshot.get(p).ram(-1))
-        x, y = ram[0x7500 - 0x4000], ram[0x7502 - 0x4000]
+        xlo, xhi = ram[0x7500 - 0x4000], ram[0x7501 - 0x4000]
+        ylo, yhi = ram[0x7502 - 0x4000], ram[0x7503 - 0x4000]
         mode = ram[0x7505 - 0x4000]
         if mode != 0:
             continue
         if not is_flight_view(ram):
             continue
-        for _, _, name, (xmin, xmax, ymin, ymax) in ISLANDS:
-            if not (xmin <= x <= xmax and ymin <= y <= ymax):
+        for _, _, name, cx_cell, cy_cell, (xmin, xmax, ymin, ymax) in ISLANDS:
+            if (xhi, yhi) != (cx_cell, cy_cell):
                 continue
-            cx, cy = (xmin + xmax) // 2, (ymin + ymax) // 2
-            dist = max(abs(x - cx), abs(y - cy))
+            if not (xmin <= xlo <= xmax and ymin <= ylo <= ymax):
+                continue
+            mid_x, mid_y = (xmin + xmax) // 2, (ymin + ymax) // 2
+            dist = max(abs(xlo - mid_x), abs(ylo - mid_y))
             if name not in best or dist < best[name][0]:
                 best[name] = (dist, frame, p)
     return {name: (f, p) for name, (_, f, p) in best.items()}
@@ -93,9 +110,10 @@ def compose_map(best: dict, out_path: str) -> None:
     # right and below.
     PLAY = (0, 0, 176, 152)  # left, top, right, bottom
 
-    # World canvas — 256 world units per axis.
+    # World canvas — 768 world units per axis (3 cells x 256).
     PPU = 8
-    W = H = 256 * PPU
+    WORLD = 768
+    W = H = WORLD * PPU
     SEA = (0, 216, 216)  # Cyclone's in-game cyan
     canvas = Image.new("RGB", (W, H), SEA)
 
@@ -105,7 +123,7 @@ def compose_map(best: dict, out_path: str) -> None:
     from PIL import ImageDraw
     d = ImageDraw.Draw(canvas)
 
-    for rec, base, name, (xmin, xmax, ymin, ymax) in ISLANDS:
+    for rec, base, name, cx_cell, cy_cell, (xmin, xmax, ymin, ymax) in ISLANDS:
         if name not in best:
             print(f'  skip {name}: no frame found')
             continue
@@ -129,31 +147,43 @@ def compose_map(best: dict, out_path: str) -> None:
                          (r == 0 and g == 184 and b == 184)
                 px_mask[xx, yy] = 0 if is_sea else 255
 
-        # Read actual helicopter (x, y) at this frame
+        # Read actual 16-bit helicopter (x, y) at this frame
         ram = bytes(Snapshot.get(snap_path).ram(-1))
-        hx, hy = ram[0x7500 - 0x4000], ram[0x7502 - 0x4000]
+        xlo = ram[0x7500 - 0x4000]
+        xhi = ram[0x7501 - 0x4000]
+        ylo = ram[0x7502 - 0x4000]
+        yhi = ram[0x7503 - 0x4000]
+        hx = xhi * 256 + xlo  # global X
+        hy = yhi * 256 + ylo  # global Y
 
-        # Paste so the helicopter's world position maps to the playfield centre
+        # Paste so the helicopter's GLOBAL world position maps to the
+        # playfield centre on the canvas.
         pw, ph = PLAY[2] - PLAY[0], PLAY[3] - PLAY[1]
         px = hx * PPU - pw // 2
         py = hy * PPU - ph // 2
         canvas.paste(screen, (px, py), mask)
 
-        # Label above each island's world centre
-        cx, cy = (xmin + xmax) // 2 * PPU, (ymin + ymax) // 2 * PPU
-        label_y = cy - (ymax - ymin) // 2 * PPU - 10
+        # Label above each island's GLOBAL world centre
+        gxmin = cx_cell * 256 + xmin
+        gxmax = cx_cell * 256 + xmax
+        gymin = cy_cell * 256 + ymin
+        gymax = cy_cell * 256 + ymax
+        cx, cy = (gxmin + gxmax) // 2 * PPU, (gymin + gymax) // 2 * PPU
+        label_y = cy - (gymax - gymin) // 2 * PPU - 10
         for ox, oy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1)]:
             d.text((cx + ox, label_y + oy), name, fill=(0, 0, 0), anchor="mm")
         d.text((cx, label_y), name, fill=(255, 255, 255), anchor="mm")
 
-        print(f'  pasted {name:20} at ({hx},{hy}) frame {frame}')
+        print(f'  pasted {name:20} at global ({hx},{hy}) '
+              f'cell=({xhi},{yhi}) local=({xlo},{ylo}) frame {frame}')
 
     # Title card
     d.rectangle([0, 0, W - 1, H - 1], outline=(0, 0, 0), width=4)
     d.text((20, 20), "Cyclone (Vortex Software, 1985)",
            fill=(255, 255, 255))
     d.text((20, 40),
-           "World map reconstructed from RZX gameplay screenshots",
+           f"World map reconstructed from RZX gameplay screenshots — "
+           f"{WORLD}x{WORLD} world (3x3 cells of 256x256)",
            fill=(240, 240, 240))
     d.text((20, 60),
            f"{len(best)}/14 islands captured; positions from master table at $F230",
